@@ -87,9 +87,16 @@ class SerialGUI:
         # Settings
         self.settings = self.load_settings()
         
+        # Create logs directory if it doesn't exist
+        self.logs_dir = os.path.join(os.getcwd(), "logs")
+        os.makedirs(self.logs_dir, exist_ok=True)
+        
         # Setup GUI
         self.setup_gui()
         self.update_port_list()
+        
+        # Initialize status indicator
+        self.update_status_indicator(False)
         
         # Start file size update timer
         self.update_file_size_display()
@@ -99,20 +106,115 @@ class SerialGUI:
     
     def setup_gui(self):
         """Setup the GUI layout"""
-        # Create main frames
+        # Create menu bar
+        self.create_menu_bar()
+        
+        # Create top frame for logging controls
+        self.create_top_frame()
+        
+        # Create notebook for tabs
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Create Connection tab
+        self.connection_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.connection_frame, text="Connection")
+        
+        # Create Plot tab (empty for now)
+        self.plot_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.plot_frame, text="Plot")
+        
+        # Setup Connection tab content
+        self.create_connection_content()
+    
+    def create_menu_bar(self):
+        """Create the menu bar"""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Quit", command=self.on_closing, accelerator="Ctrl+Q")
+        
+        # Options menu
+        options_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Options", menu=options_menu)
+        options_menu.add_command(label="Preferences", command=self.show_preferences)
+        options_menu.add_separator()
+        options_menu.add_command(label="Reset Settings", command=self.reset_settings)
+        
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="About", command=self.show_about)
+        help_menu.add_separator()
+        help_menu.add_command(label="User Guide", command=self.show_user_guide)
+        
+        # Bind keyboard shortcut for quit
+        self.root.bind_all("<Control-q>", lambda e: self.on_closing())
+    
+    def create_top_frame(self):
+        """Create top frame with status and logging controls"""
+        top_frame = ttk.Frame(self.root)
+        top_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+        
+        # Connection status on the left
+        status_outer_frame = ttk.Frame(top_frame)
+        status_outer_frame.pack(side=tk.LEFT)
+        
+        status_frame = ttk.Frame(status_outer_frame, relief="solid", borderwidth=1, padding=5)
+        status_frame.pack()
+        
+        # Status indicator (colored circle)
+        self.status_canvas = tk.Canvas(status_frame, width=16, height=16, highlightthickness=0)
+        self.status_canvas.pack(side=tk.LEFT, padx=(0, 8), pady=2)
+        
+        # Draw initial red circle (disconnected)
+        self.status_circle = self.status_canvas.create_oval(2, 2, 14, 14, fill="red", outline="darkred")
+        
+        # Status text
+        self.status_var = tk.StringVar()
+        self.status_var.set("Disconnected")
+        self.status_label = ttk.Label(status_frame, textvariable=self.status_var, font=("Arial", 10, "bold"))
+        self.status_label.pack(side=tk.LEFT)
+        
+        # Logging controls on the right
+        logging_outer_frame = ttk.Frame(top_frame)
+        logging_outer_frame.pack(side=tk.RIGHT)
+        
+        logging_frame = ttk.Frame(logging_outer_frame)
+        logging_frame.pack()
+        
+        self.logging_btn = ttk.Button(logging_frame, text="Start Logging", command=self.toggle_logging)
+        self.logging_btn.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self.logging_btn, "Start or stop continuous logging of all received data to a file")
+        
+        # Logging status with border
+        log_status_frame = ttk.Frame(logging_frame, relief="solid", borderwidth=1, padding=5)
+        log_status_frame.pack(side=tk.LEFT, padx=(0, 0))
+        
+        self.log_status_var = tk.StringVar()
+        self.log_status_var.set("Not logging")
+        self.log_status_label = ttk.Label(log_status_frame, textvariable=self.log_status_var, foreground="red", font=("Arial", 10, "bold"))
+        self.log_status_label.pack()
+    
+    def update_status_indicator(self, connected: bool):
+        """Update the connection status indicator color"""
+        if connected:
+            self.status_canvas.itemconfig(self.status_circle, fill="green", outline="darkgreen")
+        else:
+            self.status_canvas.itemconfig(self.status_circle, fill="red", outline="darkred")
+    
+    def create_connection_content(self):
+        """Create all content for the Connection tab"""
         self.create_connection_frame()
         self.create_data_frame()
         self.create_control_frame()
-        
-        # Status bar
-        self.status_var = tk.StringVar()
-        self.status_var.set("Disconnected")
-        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
     
     def create_connection_frame(self):
         """Create connection settings frame"""
-        conn_frame = ttk.LabelFrame(self.root, text="Connection Settings", padding="10")
+        conn_frame = ttk.LabelFrame(self.connection_frame, text="Connection Settings", padding="10")
         conn_frame.pack(fill=tk.X, padx=10, pady=5)
         
         # Port selection
@@ -130,34 +232,21 @@ class SerialGUI:
         baud_combo['values'] = ('9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600')
         baud_combo.grid(row=0, column=4, padx=(0, 10))
         
-        # Data bits
-        ttk.Label(conn_frame, text="Data Bits:").grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
-        self.databits_var = tk.StringVar(value=str(self.settings.get('data_bits', 8)))
-        databits_combo = ttk.Combobox(conn_frame, textvariable=self.databits_var, width=5)
-        databits_combo['values'] = ('5', '6', '7', '8')
-        databits_combo.grid(row=1, column=1, sticky=tk.W, pady=(5, 0))
-        
-        # Parity
-        ttk.Label(conn_frame, text="Parity:").grid(row=1, column=2, sticky=tk.W, padx=(10, 5), pady=(5, 0))
-        self.parity_var = tk.StringVar(value=self.settings.get('parity', 'None'))
-        parity_combo = ttk.Combobox(conn_frame, textvariable=self.parity_var, width=8)
-        parity_combo['values'] = ('None', 'Even', 'Odd', 'Mark', 'Space')
-        parity_combo.grid(row=1, column=3, sticky=tk.W, pady=(5, 0))
-        
-        # Stop bits
-        ttk.Label(conn_frame, text="Stop Bits:").grid(row=1, column=4, sticky=tk.W, padx=(10, 5), pady=(5, 0))
-        self.stopbits_var = tk.StringVar(value=str(self.settings.get('stop_bits', 1)))
-        stopbits_combo = ttk.Combobox(conn_frame, textvariable=self.stopbits_var, width=5)
-        stopbits_combo['values'] = ('1', '1.5', '2')
-        stopbits_combo.grid(row=1, column=5, sticky=tk.W, pady=(5, 0))
+        # Configure Serial Settings button
+        ttk.Button(conn_frame, text="Configure Serial Settings", command=self.show_serial_config).grid(row=1, column=1, pady=(10, 0), sticky=tk.W)
         
         # Connect/Disconnect button
         self.connect_btn = ttk.Button(conn_frame, text="Connect", command=self.toggle_connection)
-        self.connect_btn.grid(row=0, column=6, rowspan=2, padx=(15, 0), sticky=tk.NS)
+        self.connect_btn.grid(row=0, column=5, rowspan=2, padx=(15, 0), sticky=tk.NS)
+        
+        # Initialize variables for serial settings (moved from inline to here)
+        self.databits_var = tk.StringVar(value=str(self.settings.get('data_bits', 8)))
+        self.parity_var = tk.StringVar(value=self.settings.get('parity', 'None'))
+        self.stopbits_var = tk.StringVar(value=str(self.settings.get('stop_bits', 1)))
     
     def create_data_frame(self):
         """Create data display and input frame"""
-        data_frame = ttk.LabelFrame(self.root, text="Data", padding="10")
+        data_frame = ttk.LabelFrame(self.connection_frame, text="Data", padding="10")
         data_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Received data display
@@ -169,6 +258,12 @@ class SerialGUI:
         
         self.received_text = scrolledtext.ScrolledText(recv_frame, height=15, state=tk.DISABLED)
         self.received_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Configure text tags for different message types
+        self.received_text.tag_config("RECEIVED", foreground="blue")
+        self.received_text.tag_config("SENT", foreground="red")
+        self.received_text.tag_config("SYSTEM", foreground="black", font=("Arial", 9, "bold"))
+        self.received_text.tag_config("ERROR", foreground="red", font=("Arial", 9, "bold"))
         
         # Send data section
         send_frame = ttk.Frame(data_frame)
@@ -202,7 +297,7 @@ class SerialGUI:
     
     def create_control_frame(self):
         """Create control buttons frame"""
-        control_frame = ttk.LabelFrame(self.root, text="Controls", padding="10")
+        control_frame = ttk.LabelFrame(self.connection_frame, text="Controls", padding="10")
         control_frame.pack(fill=tk.X, padx=10, pady=5)
         
         # Left side buttons
@@ -216,24 +311,6 @@ class SerialGUI:
         self.save_btn.pack(side=tk.LEFT, padx=(0, 5))
         ToolTip(self.save_btn, "Save current display contents to a file")
         
-        # Logging controls
-        logging_frame = ttk.Frame(control_frame)
-        logging_frame.pack(side=tk.LEFT, padx=(20, 0))
-        
-        self.start_log_btn = ttk.Button(logging_frame, text="Start Logging", command=self.start_logging)
-        self.start_log_btn.pack(side=tk.LEFT, padx=(0, 5))
-        ToolTip(self.start_log_btn, "Start continuous logging of all received data to a file")
-        
-        self.stop_log_btn = ttk.Button(logging_frame, text="Stop Logging", command=self.stop_logging, state=tk.DISABLED)
-        self.stop_log_btn.pack(side=tk.LEFT, padx=(0, 10))
-        ToolTip(self.stop_log_btn, "Stop continuous logging and close the log file")
-        
-        # Logging status
-        self.log_status_var = tk.StringVar()
-        self.log_status_var.set("Not logging")
-        self.log_status_label = ttk.Label(logging_frame, textvariable=self.log_status_var, foreground="gray")
-        self.log_status_label.pack(side=tk.LEFT, padx=(0, 10))
-        
         # Right side buttons
         right_frame = ttk.Frame(control_frame)
         right_frame.pack(side=tk.RIGHT)
@@ -241,7 +318,7 @@ class SerialGUI:
         self.auto_scroll = tk.BooleanVar(value=True)
         ttk.Checkbutton(right_frame, text="Auto-scroll", variable=self.auto_scroll).pack(side=tk.RIGHT)
         
-        self.timestamp = tk.BooleanVar(value=True)
+        self.timestamp = tk.BooleanVar(value=False)
         ttk.Checkbutton(right_frame, text="Timestamps", variable=self.timestamp).pack(side=tk.RIGHT, padx=(0, 10))
     
     def update_port_list(self):
@@ -299,6 +376,7 @@ class SerialGUI:
                 self.connect_btn.config(text="Disconnect")
                 self.send_btn.config(state=tk.NORMAL)
                 self.status_var.set("Connected to TEST MODE - Simulated Device")
+                self.update_status_indicator(True)
                 
                 # Start test mode thread
                 self.stop_reading.clear()
@@ -328,6 +406,7 @@ class SerialGUI:
             self.connect_btn.config(text="Disconnect")
             self.send_btn.config(state=tk.NORMAL)
             self.status_var.set(f"Connected to {port} at {baud_rate} baud")
+            self.update_status_indicator(True)
             
             # Start reading thread
             self.stop_reading.clear()
@@ -360,6 +439,7 @@ class SerialGUI:
         self.connect_btn.config(text="Connect")
         self.send_btn.config(state=tk.DISABLED)
         self.status_var.set("Disconnected")
+        self.update_status_indicator(False)
         
         self.log_message("Disconnected", "SYSTEM")
     
@@ -471,24 +551,31 @@ class SerialGUI:
         self.received_text.config(state=tk.NORMAL)
         
         timestamp_str = ""
-        if self.timestamp.get():
+        # Always show timestamps for SYSTEM messages, otherwise use user setting
+        if msg_type == "SYSTEM" or self.timestamp.get():
             timestamp_str = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
         
-        type_str = f"{msg_type}: " if msg_type else ""
-        full_message = f"{timestamp_str}{type_str}{message}\n"
+        # Build the message without type prefix
+        display_message = f"{timestamp_str}{message}\n"
         
-        # Display in GUI
-        self.received_text.insert(tk.END, full_message)
+        # For file logging, include the type prefix
+        file_message = f"{timestamp_str}{msg_type + ': ' if msg_type else ''}{message}\n"
+        
+        # Display in GUI with appropriate formatting
+        if msg_type and msg_type in ["RECEIVED", "SENT", "SYSTEM", "ERROR"]:
+            self.received_text.insert(tk.END, display_message, msg_type)
+        else:
+            self.received_text.insert(tk.END, display_message)
         
         if self.auto_scroll.get():
             self.received_text.see(tk.END)
         
         self.received_text.config(state=tk.DISABLED)
         
-        # Write to log file if logging is active
+        # Write to log file if logging is active (with type prefix for file)
         if self.logging_active and self.log_file_handle:
             try:
-                self.log_file_handle.write(full_message)
+                self.log_file_handle.write(file_message)
                 self.log_file_handle.flush()  # Ensure data is written immediately
             except Exception as e:
                 print(f"Error writing to log file: {e}")
@@ -501,10 +588,16 @@ class SerialGUI:
     
     def save_log(self):
         """Save the received data to a file"""
+        # Generate default filename with current date/time (using underscores for time)
+        current_time = datetime.datetime.now()
+        default_filename = current_time.strftime("%Y-%m-%d_%H%M%S_saved_log")
+        
         filename = filedialog.asksaveasfilename(
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-            title="Save log file"
+            filetypes=[("Text files", "*.txt"), ("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Save log file",
+            initialfile=default_filename,
+            initialdir=self.logs_dir
         )
         
         if filename:
@@ -516,12 +609,25 @@ class SerialGUI:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save log: {str(e)}")
     
+    def toggle_logging(self):
+        """Toggle between starting and stopping logging"""
+        if self.logging_active:
+            self.stop_logging()
+        else:
+            self.start_logging()
+    
     def start_logging(self):
         """Start continuous logging to a selected file"""
+        # Generate default filename with current date/time (using underscores for time)
+        current_time = datetime.datetime.now()
+        default_filename = current_time.strftime("%Y-%m-%d_%H%M%S_log_file")
+        
         filename = filedialog.asksaveasfilename(
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-            title="Select log file for continuous logging"
+            filetypes=[("Text files", "*.txt"), ("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Select log file for continuous logging",
+            initialfile=default_filename,
+            initialdir=self.logs_dir
         )
         
         if filename:
@@ -531,8 +637,7 @@ class SerialGUI:
                 self.logging_active = True
                 
                 # Update UI
-                self.start_log_btn.config(state=tk.DISABLED)
-                self.stop_log_btn.config(state=tk.NORMAL)
+                self.logging_btn.config(text="Stop Logging")
                 self.log_status_label.config(foreground="green")
                 
                 # Write header to log file
@@ -566,10 +671,9 @@ class SerialGUI:
                 self.logging_active = False
                 
                 # Update UI
-                self.start_log_btn.config(state=tk.NORMAL)
-                self.stop_log_btn.config(state=tk.DISABLED)
+                self.logging_btn.config(text="Start Logging")
                 self.log_status_var.set("Not logging")
-                self.log_status_label.config(foreground="gray")
+                self.log_status_label.config(foreground="darkred")
     
     def update_file_size_display(self):
         """Update the file size display for active logging"""
@@ -636,6 +740,113 @@ class SerialGUI:
         if self.is_connected:
             self.disconnect()
         self.root.destroy()
+    
+    def show_preferences(self):
+        """Show preferences dialog (placeholder)"""
+        messagebox.showinfo("Preferences", "Preferences dialog will be implemented in a future version.")
+    
+    def reset_settings(self):
+        """Reset all settings to defaults"""
+        result = messagebox.askyesno("Reset Settings", 
+                                   "Are you sure you want to reset all settings to defaults?\n"
+                                   "This will require restarting the application.")
+        if result:
+            try:
+                if os.path.exists("serial_gui_settings.json"):
+                    os.remove("serial_gui_settings.json")
+                messagebox.showinfo("Settings Reset", 
+                                  "Settings have been reset. Please restart the application.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to reset settings: {str(e)}")
+    
+    def show_about(self):
+        """Show about dialog"""
+        about_text = """Serial Communication GUI
+        
+Version: 1.0
+A comprehensive GUI for serial port communication.
+
+Features:
+• Real-time data transmission and reception
+• Multiple display formats (text/hex)
+• Continuous logging capabilities
+• Test mode for offline development
+• Configurable connection parameters
+
+Built with Python and tkinter."""
+        
+        messagebox.showinfo("About Serial Communication GUI", about_text)
+    
+    def show_user_guide(self):
+        """Show user guide dialog"""
+        guide_text = """Quick Start Guide:
+
+1. CONNECTION
+   • Select port from dropdown or use 'TEST MODE'
+   • Configure baud rate and other parameters
+   • Click 'Connect' to establish connection
+
+2. DATA COMMUNICATION
+   • Type messages in the 'Send Data' field
+   • Press Enter or click 'Send' to transmit
+   • Received data appears in the main display
+
+3. LOGGING
+   • Click 'Start Logging' to continuously log data
+   • Click 'Stop Logging' to end logging session
+   • Use 'Save Log' for one-time saves
+
+4. OPTIONS
+   • Toggle timestamps, auto-scroll, hex display
+   • Clear display or save current contents
+   
+For detailed help, refer to the README.md file."""
+        
+        messagebox.showinfo("User Guide", guide_text)
+    
+    def show_serial_config(self):
+        """Show serial configuration dialog"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Serial Configuration")
+        dialog.geometry("220x150")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.geometry("+{}+{}".format(
+            self.root.winfo_rootx() + 50,
+            self.root.winfo_rooty() + 50
+        ))
+        
+        # Main frame
+        main_frame = ttk.Frame(dialog, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Data bits
+        ttk.Label(main_frame, text="Data Bits:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5), pady=(0, 5))
+        databits_combo = ttk.Combobox(main_frame, textvariable=self.databits_var, width=8)
+        databits_combo['values'] = ('5', '6', '7', '8')
+        databits_combo.grid(row=0, column=1, sticky=tk.W, pady=(0, 5))
+        
+        # Parity
+        ttk.Label(main_frame, text="Parity:").grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(0, 5))
+        parity_combo = ttk.Combobox(main_frame, textvariable=self.parity_var, width=8)
+        parity_combo['values'] = ('None', 'Even', 'Odd', 'Mark', 'Space')
+        parity_combo.grid(row=1, column=1, sticky=tk.W, pady=(0, 5))
+        
+        # Stop bits
+        ttk.Label(main_frame, text="Stop Bits:").grid(row=2, column=0, sticky=tk.W, padx=(0, 5), pady=(0, 10))
+        stopbits_combo = ttk.Combobox(main_frame, textvariable=self.stopbits_var, width=8)
+        stopbits_combo['values'] = ('1', '1.5', '2')
+        stopbits_combo.grid(row=2, column=1, sticky=tk.W, pady=(0, 10))
+        
+        # Buttons frame
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=3, column=0, columnspan=2, pady=(5, 0))
+        
+        ttk.Button(button_frame, text="OK", command=dialog.destroy).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
 
 
 def main():
