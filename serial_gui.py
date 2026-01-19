@@ -12,12 +12,85 @@ try:
 except ImportError:
     print("Error: pyserial not installed. Run: pip install pyserial")
     exit(1)
+try:
+    import pyqtgraph as pg
+    from PyQt5 import QtWidgets, QtCore
+    pg.setConfigOption('background', 'w')
+    pg.setConfigOption('foreground', 'k')
+    PYQTGRAPH_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: PyQtGraph not available: {e}")
+    print("Plotting functionality will be disabled.")
+    PYQTGRAPH_AVAILABLE = False
+    # Create dummy classes to prevent errors
+    class DummyQtWidgets:
+        class QApplication:
+            @staticmethod
+            def instance():
+                return None
+            def __init__(self, *args):
+                pass
+        class QMainWindow:
+            def __init__(self):
+                pass
+            def setWindowTitle(self, title):
+                pass
+            def setGeometry(self, *args):
+                pass
+            def setCentralWidget(self, widget):
+                pass
+            def show(self):
+                pass
+            def raise_(self):
+                pass
+    
+    class DummyPG:
+        class PlotWidget:
+            def __init__(self, *args, **kwargs):
+                pass
+            def setLabel(self, *args):
+                pass
+            def showGrid(self, *args):
+                pass
+            def setBackground(self, *args):
+                pass
+            def plot(self, *args, **kwargs):
+                return DummyCurve()
+            def clear(self):
+                pass
+            def getPlotItem(self):
+                return DummyPlotItem()
+        
+        class LegendItem:
+            def __init__(self, *args, **kwargs):
+                pass
+            def setParentItem(self, *args):
+                pass
+            def addItem(self, *args):
+                pass
+        
+        @staticmethod
+        def mkPen(*args, **kwargs):
+            return "dummy_pen"
+    
+    class DummyPlotItem:
+        def addLegend(self):
+            return DummyPG.LegendItem()
+    
+    class DummyCurve:
+        def setData(self, *args):
+            pass
+    
+    QtWidgets = DummyQtWidgets()
+    pg = DummyPG()
 import threading
 import time
 import datetime
 import json
 import os
 import random
+import re
+from collections import deque
 from typing import Optional, Dict, Any
 
 
@@ -74,6 +147,7 @@ class SerialGUI:
         self.is_connected = False
         self.read_thread: Optional[threading.Thread] = None
         self.stop_reading = threading.Event()
+        self.serial_buffer = ""  # Buffer for accumulating partial serial data
         
         # Test mode for simulation
         self.test_mode = False
@@ -84,8 +158,22 @@ class SerialGUI:
         self.log_file_path = None
         self.log_file_handle = None
         
+        # Plotting functionality
+        self.plot_data = {}
+        self.plot_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
+        self.plot_max_points = 1000
+        self.delimiter = ','
+        self.custom_delimiter = ''
+        self.channel_visibility = {}
+        self.plot_curves = {}
+        
         # Settings
         self.settings = self.load_settings()
+        
+        # Sample tracking for status bar
+        self.samples_received = 0
+        self.last_sample_time = time.time()
+        self.current_sps = 0
         
         # Create logs directory if it doesn't exist
         self.logs_dir = os.path.join(os.getcwd(), "logs")
@@ -100,6 +188,9 @@ class SerialGUI:
         
         # Start file size update timer
         self.update_file_size_display()
+        
+        # Start SPS update timer
+        self.update_sps_display()
         
         # Bind window close event
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -126,6 +217,12 @@ class SerialGUI:
         
         # Setup Connection tab content
         self.create_connection_content()
+        
+        # Setup Plot tab content
+        self.create_plot_content()
+        
+        # Create status bar
+        self.create_status_bar()
     
     def create_menu_bar(self):
         """Create the menu bar"""
@@ -154,6 +251,36 @@ class SerialGUI:
         # Bind keyboard shortcut for quit
         self.root.bind_all("<Control-q>", lambda e: self.on_closing())
     
+    def create_status_bar(self):
+        """Create status bar at the bottom of the window"""
+        # Status bar frame
+        self.status_bar = ttk.Frame(self.root, relief="sunken", borderwidth=1)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=2, pady=2)
+        
+        # Left side - general status
+        self.status_label = ttk.Label(self.status_bar, text="Ready")
+        self.status_label.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        # Right side - samples per second
+        self.sps_label = ttk.Label(self.status_bar, text="(0 SPS)")
+        self.sps_label.pack(side=tk.RIGHT, padx=5, pady=2)
+    
+    def update_sps_display(self):
+        """Update the samples per second display"""
+        current_time = time.time()
+        time_elapsed = current_time - self.last_sample_time
+        
+        if time_elapsed >= 1.0:  # Update every second
+            self.current_sps = self.samples_received / time_elapsed
+            self.sps_label.config(text=f"({int(self.current_sps)} SPS)")
+            
+            # Reset counters
+            self.samples_received = 0
+            self.last_sample_time = current_time
+        
+        # Schedule next update
+        self.root.after(100, self.update_sps_display)  # Update every 100ms for smoother display
+
     def create_top_frame(self):
         """Create top frame with status and logging controls"""
         top_frame = ttk.Frame(self.root)
@@ -378,6 +505,10 @@ class SerialGUI:
                 self.status_var.set("Connected to TEST MODE - Simulated Device")
                 self.update_status_indicator(True)
                 
+                # Update status bar
+                if hasattr(self, 'status_label'):
+                    self.status_label.config(text="Connected to TEST MODE")
+                
                 # Start test mode thread
                 self.stop_reading.clear()
                 self.read_thread = threading.Thread(target=self.test_mode_loop, daemon=True)
@@ -408,6 +539,10 @@ class SerialGUI:
             self.status_var.set(f"Connected to {port} at {baud_rate} baud")
             self.update_status_indicator(True)
             
+            # Update status bar
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text=f"Connected to {port}")
+            
             # Start reading thread
             self.stop_reading.clear()
             self.read_thread = threading.Thread(target=self.read_serial_data, daemon=True)
@@ -428,6 +563,7 @@ class SerialGUI:
         self.is_connected = False
         self.test_mode = False
         self.stop_reading.set()
+        self.serial_buffer = ""  # Clear buffer on disconnect
         
         if self.serial_connection:
             self.serial_connection.close()
@@ -440,6 +576,10 @@ class SerialGUI:
         self.send_btn.config(state=tk.DISABLED)
         self.status_var.set("Disconnected")
         self.update_status_indicator(False)
+        
+        # Update status bar
+        if hasattr(self, 'status_label'):
+            self.status_label.config(text="Disconnected")
         
         self.log_message("Disconnected", "SYSTEM")
     
@@ -466,10 +606,27 @@ class SerialGUI:
         try:
             if self.hex_display.get():
                 text = ' '.join([f'{byte:02X}' for byte in data])
+                self.log_message(text, "RECEIVED")
+                # Count hex data chunks as samples
+                self.samples_received += 1
             else:
-                text = data.decode('utf-8', errors='replace')
-            
-            self.log_message(text, "RECEIVED")
+                # Decode and add to buffer
+                new_text = data.decode('utf-8', errors='replace')
+                self.serial_buffer += new_text
+                
+                # Process complete lines
+                while '\n' in self.serial_buffer:
+                    line, self.serial_buffer = self.serial_buffer.split('\n', 1)
+                    line = line.rstrip('\r')  # Remove carriage return if present
+                    
+                    if line:  # Only process non-empty lines
+                        self.log_message(line, "RECEIVED")
+                        
+                        # Count samples for SPS calculation
+                        self.samples_received += 1
+                        
+                        # Parse data for plotting
+                        self.parse_plot_data(line)
             
         except Exception as e:
             self.log_message(f"Error displaying data: {str(e)}", "ERROR")
@@ -527,6 +684,19 @@ class SerialGUI:
                     
                     sensor_data = f"Sensor: T={temp:.1f}°C, H={humidity:.1f}%, V={voltage:.2f}V"
                     self.root.after(0, lambda msg=sensor_data: self.log_message(msg, "RECEIVED"))
+                
+                # Send plot data every 100ms (10 times per second)
+                if self.test_counter % 10 == 0:
+                    # Generate sample plot data with named channels
+                    temp_val = 25 + 5 * random.random() * (1 if random.random() > 0.5 else -1)
+                    sine_val = 50 + 30 * (time.time() % 10) / 10  # Ramp from 50 to 80
+                    noise_val = random.uniform(0, 100)
+                    
+                    plot_data = f"Temp:{temp_val:.2f},Sine:{sine_val:.2f},Noise:{noise_val:.2f}"
+                    
+                    # Send as bytes to simulate real serial data
+                    data_bytes = (plot_data + '\\n').encode('utf-8')
+                    self.root.after(0, self.display_received_data, data_bytes)
                 
                 # Send system status every 10 seconds
                 elif self.test_counter % 1000 == 500:  # Offset timing
@@ -847,6 +1017,294 @@ For detailed help, refer to the README.md file."""
         
         ttk.Button(button_frame, text="OK", command=dialog.destroy).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
+    
+    def create_plot_content(self):
+        """Create plot tab content"""
+        # Delimiter selection frame
+        delimiter_frame = ttk.LabelFrame(self.plot_frame, text="Data Parsing", padding="10")
+        delimiter_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(delimiter_frame, text="Delimiter:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        self.delimiter_var = tk.StringVar(value="comma")
+        delim_frame = ttk.Frame(delimiter_frame)
+        delim_frame.grid(row=0, column=1, sticky=tk.W)
+        
+        ttk.Radiobutton(delim_frame, text="Comma (,)", variable=self.delimiter_var, 
+                       value="comma", command=self.update_delimiter).pack(side=tk.LEFT)
+        ttk.Radiobutton(delim_frame, text="Space", variable=self.delimiter_var, 
+                       value="space", command=self.update_delimiter).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(delim_frame, text="Tab", variable=self.delimiter_var, 
+                       value="tab", command=self.update_delimiter).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(delim_frame, text="Other:", variable=self.delimiter_var, 
+                       value="other", command=self.update_delimiter).pack(side=tk.LEFT, padx=(10, 0))
+        
+        self.custom_delim_entry = ttk.Entry(delim_frame, width=5)
+        self.custom_delim_entry.pack(side=tk.LEFT, padx=(5, 0))
+        self.custom_delim_entry.bind('<KeyRelease>', self.on_custom_delimiter_change)
+        
+        # Channel visibility frame
+        self.channel_frame = ttk.LabelFrame(self.plot_frame, text="Channels", padding="10")
+        self.channel_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(self.channel_frame, text="No channels detected").pack()
+        
+        # PyQtGraph widget frame
+        plot_container = ttk.Frame(self.plot_frame)
+        plot_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Create QApplication if it doesn't exist
+        try:
+            self.qt_app = QtWidgets.QApplication.instance()
+            if self.qt_app is None:
+                self.qt_app = QtWidgets.QApplication([])
+        except Exception as e:
+            self.qt_app = None
+            
+        # Create PyQtGraph widget in a separate window
+        self.plot_window = None
+        self.plot_widget = None
+        
+        # Control buttons for plot
+        plot_control_frame = ttk.Frame(plot_container)
+        plot_control_frame.pack(pady=10)
+        
+        self.show_plot_btn = ttk.Button(plot_control_frame, text="Show Plot Window", command=self.show_plot_window)
+        self.show_plot_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.clear_plot_btn = ttk.Button(plot_control_frame, text="Clear Plot Data", command=self.clear_plot_data)
+        self.clear_plot_btn.pack(side=tk.LEFT)
+        
+        # Status label
+        self.plot_status_label = ttk.Label(plot_container, text="Click 'Show Plot Window' to display real-time plots")
+        self.plot_status_label.pack(pady=20)
+    
+    def update_delimiter(self):
+        """Update the delimiter based on selection"""
+        delim_type = self.delimiter_var.get()
+        if delim_type == "comma":
+            self.delimiter = ','
+        elif delim_type == "space":
+            self.delimiter = ' '
+        elif delim_type == "tab":
+            self.delimiter = '\\t'
+        elif delim_type == "other":
+            self.delimiter = self.custom_delim_entry.get() or ','
+    
+    def on_custom_delimiter_change(self, event=None):
+        """Handle custom delimiter entry changes"""
+        if self.delimiter_var.get() == "other":
+            self.delimiter = self.custom_delim_entry.get() or ','
+    
+    def parse_plot_data(self, raw_data: str):
+        """Parse incoming data for plotting"""
+        try:
+            # Split by delimiter
+            parts = raw_data.strip().split(self.delimiter)
+            parsed_channels = {}
+            
+            for i, part in enumerate(parts):
+                part = part.strip()
+                if ':' in part:
+                    # Named channel format "name:value"
+                    name, value_str = part.split(':', 1)
+                    name = name.strip()
+                    try:
+                        value = float(value_str.strip())
+                        parsed_channels[name] = value
+                    except ValueError:
+                        continue
+                else:
+                    # Unnamed channel, use index
+                    try:
+                        value = float(part)
+                        channel_name = f"Ch{i+1}"
+                        parsed_channels[channel_name] = value
+                    except ValueError:
+                        continue
+            
+            # Update plot data
+            if parsed_channels:
+                self.update_plot_channels(parsed_channels)
+                
+        except Exception as e:
+            # Silently ignore parsing errors to avoid spam
+            pass
+    
+    def update_plot_channels(self, new_data: Dict[str, float]):
+        """Update plot data structures with new channel data"""
+        for channel_name, value in new_data.items():
+            # Initialize channel if new
+            if channel_name not in self.plot_data:
+                self.plot_data[channel_name] = deque(maxlen=self.plot_max_points)
+                self.channel_visibility[channel_name] = True
+                self.add_channel_control(channel_name)
+                
+                # Add plot curve if plot widget exists
+                if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+                    color_index = len(self.plot_curves) % len(self.plot_colors)
+                    color = self.plot_colors[color_index]
+                    try:
+                        if PYQTGRAPH_AVAILABLE:
+                            # Create pen with thicker width and add symbols for data points
+                            pen = pg.mkPen(color=color, width=2)
+                            curve = self.plot_widget.plot(pen=pen, symbol='o', symbolSize=4, 
+                                                        symbolBrush=color, name=channel_name)
+                        else:
+                            # Fallback for dummy mode
+                            curve = self.plot_widget.plot(pen=color, name=channel_name)
+                        self.plot_curves[channel_name] = curve
+                        # Add to legend if it exists
+                        if hasattr(self, 'plot_legend') and self.plot_legend is not None:
+                            self.plot_legend.addItem(curve, channel_name)
+                    except:
+                        pass
+            
+            # Add data point
+            self.plot_data[channel_name].append(value)
+        
+        # Update plot display
+        self.update_plot_display()
+    
+    def add_channel_control(self, channel_name: str):
+        """Add visibility control for a channel"""
+        # Clear the "No channels" message if it's the first channel
+        if len(self.plot_data) == 1:
+            for widget in self.channel_frame.winfo_children():
+                widget.destroy()
+        
+        # Create checkbox for channel visibility
+        var = tk.BooleanVar(value=True)
+        checkbox = ttk.Checkbutton(
+            self.channel_frame,
+            text=channel_name,
+            variable=var,
+            command=lambda: self.toggle_channel_visibility(channel_name, var.get())
+        )
+        checkbox.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Store reference
+        setattr(self, f"channel_var_{channel_name}", var)
+    
+    def toggle_channel_visibility(self, channel_name: str, visible: bool):
+        """Toggle visibility of a plot channel"""
+        self.channel_visibility[channel_name] = visible
+        self.update_plot_display()
+    
+    def update_plot_display(self):
+        """Update the plot display with current data"""
+        if not hasattr(self, 'plot_widget') or self.plot_widget is None:
+            return
+            
+        try:
+            for channel_name, curve in self.plot_curves.items():
+                if channel_name in self.plot_data and self.channel_visibility.get(channel_name, True):
+                    data_points = list(self.plot_data[channel_name])
+                    if data_points:
+                        x_data = list(range(len(data_points)))
+                        curve.setData(x_data, data_points)
+                else:
+                    curve.setData([], [])
+        except Exception as e:
+            # Silently handle plot update errors
+            pass
+    
+    def show_plot_window(self):
+        """Show the plot window"""
+        if not PYQTGRAPH_AVAILABLE:
+            self.plot_status_label.config(text="PyQtGraph not available. Please install: pip install pyqtgraph PyQt5")
+            return
+            
+        if self.qt_app is None:
+            try:
+                self.qt_app = QtWidgets.QApplication.instance()
+                if self.qt_app is None:
+                    self.qt_app = QtWidgets.QApplication([])
+            except Exception as e:
+                self.plot_status_label.config(text=f"Error creating Qt application: {str(e)}")
+                return
+        
+        try:
+            if self.plot_window is None:
+                self.plot_window = QtWidgets.QMainWindow()
+                self.plot_window.setWindowTitle("Serial Data Plot")
+                self.plot_window.setGeometry(100, 100, 800, 600)
+                
+                self.plot_widget = pg.PlotWidget(title="Serial Data Plot")
+                self.plot_widget.setLabel('left', 'Value')
+                self.plot_widget.setLabel('bottom', 'Sample')
+                self.plot_widget.showGrid(True, True)
+                self.plot_widget.setBackground('white')
+                
+                # Add legend using LegendItem
+                if PYQTGRAPH_AVAILABLE:
+                    try:
+                        self.plot_legend = pg.LegendItem(offset=(-70, 30))  # Negative offset for top-right
+                        self.plot_legend.setParentItem(self.plot_widget.getPlotItem())
+                    except:
+                        # Fallback if legend creation fails
+                        self.plot_legend = None
+                else:
+                    self.plot_legend = None
+                
+                self.plot_window.setCentralWidget(self.plot_widget)
+                
+                # Recreate all plot curves
+                self.plot_curves = {}
+                for i, channel_name in enumerate(self.plot_data.keys()):
+                    color_index = i % len(self.plot_colors)
+                    color = self.plot_colors[color_index]
+                    if PYQTGRAPH_AVAILABLE:
+                        # Create pen with thicker width and add symbols for data points
+                        pen = pg.mkPen(color=color, width=2)
+                        curve = self.plot_widget.plot(pen=pen, symbol='o', symbolSize=4, 
+                                                    symbolBrush=color, name=channel_name)
+                    else:
+                        # Fallback for dummy mode
+                        curve = self.plot_widget.plot(pen=color, name=channel_name)
+                    self.plot_curves[channel_name] = curve
+                    # Add to legend if it exists
+                    if self.plot_legend is not None:
+                        try:
+                            self.plot_legend.addItem(curve, channel_name)
+                        except:
+                            pass
+                
+                # Update with current data
+                self.update_plot_display()
+            
+            self.plot_window.show()
+            self.plot_window.raise_()
+            self.plot_status_label.config(text="Plot window is open and updating in real-time")
+            
+        except Exception as e:
+            self.plot_status_label.config(text=f"Error creating plot window: {str(e)}")
+    
+    def clear_plot_data(self):
+        """Clear all plot data"""
+        self.plot_data.clear()
+        self.plot_curves.clear()
+        self.channel_visibility.clear()
+        
+        # Clear channel controls
+        for widget in self.channel_frame.winfo_children():
+            widget.destroy()
+        ttk.Label(self.channel_frame, text="No channels detected").pack()
+        
+        # Clear plot if window exists
+        if self.plot_widget is not None:
+            self.plot_widget.clear()
+            # Recreate legend after clearing
+            if PYQTGRAPH_AVAILABLE:
+                try:
+                    self.plot_legend = pg.LegendItem(offset=(-70, 30))  # Negative offset for top-right
+                    self.plot_legend.setParentItem(self.plot_widget.getPlotItem())
+                except:
+                    self.plot_legend = None
+            else:
+                self.plot_legend = None
+        
+        self.plot_status_label.config(text="Plot data cleared")
 
 
 def main():
