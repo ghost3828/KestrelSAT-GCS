@@ -1521,8 +1521,11 @@ For technical support, refer to the README.md file."""
         try:
             if self.plot_window is None:
                 if PYQTGRAPH_AVAILABLE:
+                    # Import the real Qt classes for inheritance
+                    from PyQt5.QtWidgets import QMainWindow
+                    
                     # Create a custom QMainWindow class with proper close event handling
-                    class PlotWindow(QtWidgets.QMainWindow):
+                    class PlotWindow(QMainWindow):
                         def __init__(self, parent_gui):
                             super().__init__()
                             self.parent_gui = parent_gui
@@ -1639,9 +1642,16 @@ For technical support, refer to the README.md file."""
 
 def main():
     """Main function"""
-    root = tk.Tk()
-    app = SerialGUI(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        app = SerialGUI(root)
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("Application interrupted by user")
+    except Exception as e:
+        print(f"Error running application: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
