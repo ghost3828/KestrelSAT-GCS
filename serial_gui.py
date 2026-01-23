@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Serial Communication GUI Application
 A comprehensive GUI for interacting with serial devices using tkinter and pyserial.
@@ -185,6 +184,11 @@ class SerialGUI:
         
         # Flag to track first line received (for clearing partial data)
         self.first_line_received = False
+        
+        # Plot update optimization
+        self.last_plot_update = 0
+        self.plot_update_interval = 0.033  # ~30 FPS (33ms between updates)
+        self.pending_plot_update = False
         
         # Create logs directory if it doesn't exist
         self.logs_dir = os.path.join(os.getcwd(), "logs")
@@ -1226,8 +1230,8 @@ For technical support, refer to the README.md file."""
                     old_data = list(self.plot_data[channel_name])
                     self.plot_data[channel_name] = deque(old_data, maxlen=new_buffer_size)
             
-            # Refresh plot display
-            self.update_plot_display()
+            # Refresh plot display with throttling
+            self.schedule_plot_update()
             
         except ValueError:
             # Reset to current values if invalid input
@@ -1311,8 +1315,8 @@ For technical support, refer to the README.md file."""
             # Add data point using the provided sample number (same for all channels in this line)
             self.plot_data[channel_name].append((sample_number, value))
         
-        # Update plot display
-        self.update_plot_display()
+        # Schedule throttled plot update instead of immediate update
+        self.schedule_plot_update()
     
     def add_channel_control(self, channel_name: str):
         """Add visibility control for a channel with thickness and color options"""
@@ -1380,7 +1384,29 @@ For technical support, refer to the README.md file."""
     def toggle_channel_visibility(self, channel_name: str, visible: bool):
         """Toggle visibility of a plot channel"""
         self.channel_visibility[channel_name] = visible
-        self.update_plot_display()
+        self.schedule_plot_update()  # Use throttled update
+    
+    def schedule_plot_update(self):
+        """Schedule a throttled plot update to improve performance"""
+        current_time = time.time()
+        
+        # If enough time has passed since last update, update immediately
+        if current_time - self.last_plot_update >= self.plot_update_interval:
+            self.update_plot_display()
+            self.last_plot_update = current_time
+            self.pending_plot_update = False
+        elif not self.pending_plot_update:
+            # Schedule an update for later
+            self.pending_plot_update = True
+            delay_ms = int((self.plot_update_interval - (current_time - self.last_plot_update)) * 1000)
+            self.root.after(delay_ms, self.execute_pending_plot_update)
+    
+    def execute_pending_plot_update(self):
+        """Execute a pending plot update"""
+        if self.pending_plot_update:
+            self.update_plot_display()
+            self.last_plot_update = time.time()
+            self.pending_plot_update = False
     
     def update_channel_thickness(self, channel_name: str, thickness_str: str):
         """Update line thickness for a channel"""
@@ -1472,10 +1498,10 @@ For technical support, refer to the README.md file."""
             self.pause_plot_btn.config(text="Pause Plot")
             self.plot_status_label.config(text="Plot window is open and updating in real-time")
             # Update plot with accumulated data when resuming
-            self.update_plot_display()
+            self.schedule_plot_update()  # Use throttled update
     
     def update_plot_display(self):
-        """Update the plot display with current data"""
+        """Update the plot display with current data (optimized for performance)"""
         if not hasattr(self, 'plot_widget') or self.plot_widget is None:
             return
         
@@ -1486,17 +1512,27 @@ For technical support, refer to the README.md file."""
         try:
             for channel_name, curve in self.plot_curves.items():
                 if channel_name in self.plot_data and self.channel_visibility.get(channel_name, True):
-                    data_tuples = list(self.plot_data[channel_name])
+                    data_tuples = self.plot_data[channel_name]
                     if data_tuples:
-                        # Limit displayed data to plot_width
-                        if len(data_tuples) > self.plot_width:
-                            data_tuples = data_tuples[-self.plot_width:]
+                        # Convert deque to list only once
+                        data_list = list(data_tuples)
                         
-                        # Extract sample numbers and values
-                        x_data = [sample_num for sample_num, value in data_tuples]
-                        y_data = [value for sample_num, value in data_tuples]
+                        # Limit displayed data to plot_width for performance
+                        if len(data_list) > self.plot_width:
+                            data_list = data_list[-self.plot_width:]
                         
-                        curve.setData(x_data, y_data)
+                        # Data decimation for very large datasets
+                        if len(data_list) > 10000:
+                            # Show every nth point when dataset is very large
+                            step = len(data_list) // 5000  # Decimate to ~5000 points max
+                            data_list = data_list[::step]
+                        
+                        # Extract coordinates efficiently
+                        if data_list:
+                            x_data, y_data = zip(*data_list)  # More efficient than list comprehensions
+                            curve.setData(x_data, y_data)
+                        else:
+                            curve.setData([], [])
                 else:
                     curve.setData([], [])
         except Exception as e:
