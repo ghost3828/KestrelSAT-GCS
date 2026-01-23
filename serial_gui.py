@@ -170,6 +170,11 @@ class SerialGUI:
         self.channel_thickness = {}  # Store line thickness for each channel
         self.channel_colors = {}  # Store custom colors for each channel
         self.channel_custom_names = {}  # Store custom names for each channel
+        self.channel_dot_size = {}  # Store dot size for each channel
+        self.channel_show_line = {}  # Store line visibility for each channel
+        self.x_axis_selection = "Sample Number"  # Default x-axis is sample number
+        self.x_axis_custom_label = ""  # Custom X-axis label override
+        self.y_axis_custom_label = ""  # Custom Y-axis label override
         
         # Settings
         self.settings = self.load_settings()
@@ -1142,9 +1147,42 @@ For technical support, refer to the README.md file."""
         apply_btn = ttk.Button(settings_frame, text="Apply", command=self.update_buffer_settings)
         apply_btn.grid(row=0, column=4, padx=(10, 0))
         
+        # X-Axis selection frame
+        xaxis_frame = ttk.LabelFrame(self.plot_frame, text="Set X-Axis", padding="10")
+        xaxis_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(xaxis_frame, text="X-Axis:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        self.xaxis_var = tk.StringVar(value="Sample Number")
+        self.xaxis_combo = ttk.Combobox(xaxis_frame, textvariable=self.xaxis_var, width=20, state="readonly")
+        self.xaxis_combo['values'] = ('Sample Number',)
+        self.xaxis_combo.grid(row=0, column=1, sticky=tk.W)
+        self.xaxis_combo.bind('<<ComboboxSelected>>', self.on_xaxis_changed)
+        ToolTip(self.xaxis_combo, "Choose what data to display on the X-axis: sample number or any channel data")
+        
+        # X-axis label override
+        ttk.Label(xaxis_frame, text="Custom X-Axis Label:").grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=(5, 0))
+        self.xlabel_var = tk.StringVar(value=self.x_axis_custom_label)
+        xlabel_entry = ttk.Entry(xaxis_frame, textvariable=self.xlabel_var, width=25)
+        xlabel_entry.grid(row=1, column=1, sticky=tk.W, pady=(5, 0))
+        xlabel_entry.bind('<Return>', self.on_x_label_changed)
+        xlabel_entry.bind('<FocusOut>', self.on_x_label_changed)
+        ToolTip(xlabel_entry, "Optional custom label for X-axis (leave empty for automatic)")
+        
         # Channel visibility frame
-        self.channel_frame = ttk.LabelFrame(self.plot_frame, text="Channels", padding="10")
+        self.channel_frame = ttk.LabelFrame(self.plot_frame, text="Set Y-Axis", padding="10")
         self.channel_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Y-axis custom label at the top of the frame
+        ylabel_frame = tk.Frame(self.channel_frame)
+        ylabel_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(ylabel_frame, text="Custom Y-Axis Label:").pack(side=tk.LEFT, padx=(0, 5))
+        self.ylabel_var = tk.StringVar(value=self.y_axis_custom_label)
+        self.ylabel_entry = ttk.Entry(ylabel_frame, textvariable=self.ylabel_var, width=25)
+        self.ylabel_entry.pack(side=tk.LEFT, padx=(0, 5))
+        self.ylabel_entry.bind('<Return>', self.on_y_label_changed)
+        self.ylabel_entry.bind('<FocusOut>', self.on_y_label_changed)
         
         ttk.Label(self.channel_frame, text="No channels detected").pack()
         
@@ -1198,6 +1236,17 @@ For technical support, refer to the README.md file."""
         if self.delimiter_var.get() == "other":
             self.delimiter = self.custom_delim_entry.get() or ','
     
+    def on_xaxis_changed(self, event=None):
+        """Handle x-axis selection changes"""
+        self.x_axis_selection = self.xaxis_var.get()
+        
+        # Update X-axis label if no custom label is set
+        if not self.x_axis_custom_label.strip():
+            self.update_x_axis_label()
+        
+        # Update plot display with new x-axis
+        self.schedule_plot_update()
+    
     def update_buffer_settings(self, event=None):
         """Update buffer size and plot width settings"""
         try:
@@ -1237,6 +1286,54 @@ For technical support, refer to the README.md file."""
             # Reset to current values if invalid input
             self.buffer_size_var.set(str(self.plot_max_points))
             self.plot_width_var.set(str(self.plot_width))
+    
+    def on_x_label_changed(self, event=None):
+        """Handle X-axis label override change"""
+        self.x_axis_custom_label = self.xlabel_var.get()
+        self.update_x_axis_label()
+    
+    def update_x_axis_label(self):
+        """Update the X-axis label based on selection and custom override"""
+        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+            try:
+                if PYQTGRAPH_AVAILABLE:
+                    # Use custom label if provided, otherwise use default based on selection
+                    if self.x_axis_custom_label.strip():
+                        label = self.x_axis_custom_label
+                    else:
+                        if self.x_axis_selection == "Sample Number":
+                            label = "Sample Number"
+                        else:
+                            # Use channel name or custom name if available
+                            channel_name = self.x_axis_selection
+                            if channel_name in self.channel_custom_names and self.channel_custom_names[channel_name].strip():
+                                label = self.channel_custom_names[channel_name]
+                            else:
+                                label = channel_name
+                    
+                    self.plot_widget.setLabel('bottom', label)
+            except:
+                pass
+    
+    def on_y_label_changed(self, event=None):
+        """Handle Y-axis label override change"""
+        self.y_axis_custom_label = self.ylabel_var.get()
+        self.update_y_axis_label()
+    
+    def update_y_axis_label(self):
+        """Update the Y-axis label based on custom override"""
+        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+            try:
+                if PYQTGRAPH_AVAILABLE:
+                    # Use custom label if provided, otherwise use default
+                    if self.y_axis_custom_label.strip():
+                        label = self.y_axis_custom_label
+                    else:
+                        label = "Value"  # Default Y-axis label
+                    
+                    self.plot_widget.setLabel('left', label)
+            except:
+                pass
     
     def parse_plot_data(self, raw_data: str):
         """Parse incoming data for plotting"""
@@ -1288,18 +1385,39 @@ For technical support, refer to the README.md file."""
                 color_index = len(self.channel_colors) % len(self.plot_colors)
                 self.channel_colors[channel_name] = self.plot_colors[color_index]
                 
+                # Set default dot size and line visibility
+                self.channel_dot_size[channel_name] = 4
+                self.channel_show_line[channel_name] = True
+                
                 self.add_channel_control(channel_name)
+                
+                # Update x-axis dropdown with new channel
+                self.update_xaxis_dropdown()
                 
                 # Add plot curve if plot widget exists
                 if hasattr(self, 'plot_widget') and self.plot_widget is not None:
                     try:
                         if PYQTGRAPH_AVAILABLE:
-                            # Use custom thickness and color
+                            # Use custom thickness, color, dot size, and line visibility
                             thickness = self.channel_thickness[channel_name]
                             color = self.channel_colors[channel_name]
-                            pen = pg.mkPen(color=color, width=thickness)
-                            curve = self.plot_widget.plot(pen=pen, symbol='o', symbolSize=4, 
-                                                        symbolBrush=color, name=channel_name)
+                            dot_size = self.channel_dot_size[channel_name]
+                            show_line = self.channel_show_line[channel_name]
+                            
+                            # Set up pen (line)
+                            pen = pg.mkPen(color=color, width=thickness) if show_line else None
+                            
+                            # Set up symbol (dots)
+                            symbol = 'o' if dot_size > 0 else None
+                            symbol_size = dot_size if dot_size > 0 else 1
+                            
+                            curve = self.plot_widget.plot(
+                                pen=pen, 
+                                symbol=symbol, 
+                                symbolSize=symbol_size,
+                                symbolBrush=color, 
+                                name=channel_name
+                            )
                         else:
                             # Fallback for dummy mode
                             color = self.channel_colors[channel_name]
@@ -1320,9 +1438,15 @@ For technical support, refer to the README.md file."""
     
     def add_channel_control(self, channel_name: str):
         """Add visibility control for a channel with thickness and color options"""
-        # Clear the "No channels" message if it's the first channel
+        # Clear only the "No channels detected" message if it's the first channel
         if len(self.plot_data) == 1:
+            # Only destroy the "No channels detected" label, preserve Y-axis label frame
+            widgets_to_remove = []
             for widget in self.channel_frame.winfo_children():
+                if isinstance(widget, ttk.Label) and widget.cget("text") == "No channels detected":
+                    widgets_to_remove.append(widget)
+            
+            for widget in widgets_to_remove:
                 widget.destroy()
         
         # Create frame for this channel's controls
@@ -1367,12 +1491,37 @@ For technical support, refer to the README.md file."""
             width=8,
             command=lambda: self.choose_channel_color(channel_name)
         )
-        color_btn.pack(side=tk.LEFT, padx=(0, 5))
+        color_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Dot size control
+        ttk.Label(channel_control_frame, text="Dot Size:").pack(side=tk.LEFT, padx=(0, 2))
+        dot_size_var = tk.StringVar(value=str(self.channel_dot_size[channel_name]))
+        dot_size_spinbox = ttk.Spinbox(
+            channel_control_frame,
+            from_=0, to=20, width=3,
+            textvariable=dot_size_var,
+            command=lambda: self.update_channel_dot_size(channel_name, dot_size_var.get())
+        )
+        dot_size_spinbox.pack(side=tk.LEFT, padx=(0, 10))
+        dot_size_spinbox.bind('<Return>', lambda e: self.update_channel_dot_size(channel_name, dot_size_var.get()))
+        dot_size_spinbox.bind('<FocusOut>', lambda e: self.update_channel_dot_size(channel_name, dot_size_var.get()))
+        
+        # Show line toggle
+        line_var = tk.BooleanVar(value=self.channel_show_line[channel_name])
+        line_checkbox = ttk.Checkbutton(
+            channel_control_frame,
+            text="Show Line",
+            variable=line_var,
+            command=lambda: self.toggle_channel_line(channel_name, line_var.get())
+        )
+        line_checkbox.pack(side=tk.LEFT, padx=(0, 5))
         
         # Store references
         setattr(self, f"channel_var_{channel_name}", var)
         setattr(self, f"name_var_{channel_name}", name_var)
         setattr(self, f"thickness_var_{channel_name}", thickness_var)
+        setattr(self, f"dot_size_var_{channel_name}", dot_size_var)
+        setattr(self, f"line_var_{channel_name}", line_var)
         setattr(self, f"color_btn_{channel_name}", color_btn)
         
         # Initialize custom name
@@ -1408,6 +1557,28 @@ For technical support, refer to the README.md file."""
             self.last_plot_update = time.time()
             self.pending_plot_update = False
     
+    def update_xaxis_dropdown(self):
+        """Update x-axis dropdown with available channels"""
+        try:
+            # Get current selection
+            current_selection = self.xaxis_var.get()
+            
+            # Build list of options: Sample Number + all channels
+            options = ['Sample Number']
+            for channel_name in sorted(self.plot_data.keys()):
+                display_name = self.channel_custom_names.get(channel_name, channel_name)
+                options.append(display_name)
+            
+            # Update combobox values
+            self.xaxis_combo['values'] = options
+            
+            # Restore selection if it still exists, otherwise default to Sample Number
+            if current_selection not in options:
+                self.xaxis_var.set('Sample Number')
+                self.x_axis_selection = 'Sample Number'
+        except:
+            pass
+    
     def update_channel_thickness(self, channel_name: str, thickness_str: str):
         """Update line thickness for a channel"""
         try:
@@ -1431,10 +1602,63 @@ For technical support, refer to the README.md file."""
             if thickness_var:
                 thickness_var.set(str(self.channel_thickness[channel_name]))
     
+    def update_channel_dot_size(self, channel_name: str, dot_size_str: str):
+        """Update dot size for a channel"""
+        try:
+            dot_size = int(dot_size_str)
+            dot_size = max(0, min(20, dot_size))  # Clamp between 0 and 20
+            self.channel_dot_size[channel_name] = dot_size
+            
+            # Update the plot curve if it exists
+            if channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None:
+                try:
+                    if PYQTGRAPH_AVAILABLE:
+                        curve = self.plot_curves[channel_name]
+                        color = self.channel_colors[channel_name]
+                        if dot_size > 0:
+                            curve.setSymbol('o')
+                            curve.setSymbolSize(dot_size)
+                            curve.setSymbolBrush(color)
+                        else:
+                            curve.setSymbol(None)  # No dots
+                except:
+                    pass
+                    
+        except ValueError:
+            # Reset to current value if invalid input
+            dot_size_var = getattr(self, f"dot_size_var_{channel_name}", None)
+            if dot_size_var:
+                dot_size_var.set(str(self.channel_dot_size[channel_name]))
+    
+    def toggle_channel_line(self, channel_name: str, show_line: bool):
+        """Toggle line visibility for a channel"""
+        self.channel_show_line[channel_name] = show_line
+        
+        # Update the plot curve if it exists
+        if channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None:
+            try:
+                if PYQTGRAPH_AVAILABLE:
+                    curve = self.plot_curves[channel_name]
+                    if show_line:
+                        # Show line with current thickness and color
+                        thickness = self.channel_thickness[channel_name]
+                        color = self.channel_colors[channel_name]
+                        pen = pg.mkPen(color=color, width=thickness)
+                        curve.setPen(pen)
+                    else:
+                        # Hide line
+                        curve.setPen(None)
+            except:
+                pass
+    
     def update_channel_name(self, channel_name: str, new_name: str):
         """Update custom display name for a channel"""
         if new_name.strip():
             self.channel_custom_names[channel_name] = new_name.strip()
+            
+            # Update X-axis label if this channel is selected as X-axis and no custom label is set
+            if (self.x_axis_selection == channel_name and not self.x_axis_custom_label.strip()):
+                self.update_x_axis_label()
             
             # Update legend if it exists and plot widget is available
             if (hasattr(self, 'plot_legend') and self.plot_legend is not None and 
@@ -1510,6 +1734,18 @@ For technical support, refer to the README.md file."""
             return
             
         try:
+            # Determine x-axis data source
+            x_axis_channel = None
+            if self.x_axis_selection != "Sample Number":
+                # Find the channel corresponding to the selected display name
+                for channel_name, display_name in self.channel_custom_names.items():
+                    if display_name == self.x_axis_selection:
+                        x_axis_channel = channel_name
+                        break
+                # If not found in custom names, check original names
+                if x_axis_channel is None and self.x_axis_selection in self.plot_data:
+                    x_axis_channel = self.x_axis_selection
+            
             for channel_name, curve in self.plot_curves.items():
                 if channel_name in self.plot_data and self.channel_visibility.get(channel_name, True):
                     data_tuples = self.plot_data[channel_name]
@@ -1521,18 +1757,48 @@ For technical support, refer to the README.md file."""
                         if len(data_list) > self.plot_width:
                             data_list = data_list[-self.plot_width:]
                         
-                        # Data decimation for very large datasets
-                        if len(data_list) > 10000:
-                            # Show every nth point when dataset is very large
-                            step = len(data_list) // 5000  # Decimate to ~5000 points max
-                            data_list = data_list[::step]
-                        
-                        # Extract coordinates efficiently
-                        if data_list:
-                            x_data, y_data = zip(*data_list)  # More efficient than list comprehensions
-                            curve.setData(x_data, y_data)
+                        # Get x-axis data
+                        if x_axis_channel and x_axis_channel in self.plot_data:
+                            # Use selected channel for x-axis
+                            x_data_tuples = list(self.plot_data[x_axis_channel])
+                            if len(x_data_tuples) > self.plot_width:
+                                x_data_tuples = x_data_tuples[-self.plot_width:]
+                            
+                            # Align data by sample number
+                            min_length = min(len(data_list), len(x_data_tuples))
+                            if min_length > 0:
+                                data_list = data_list[-min_length:]
+                                x_data_tuples = x_data_tuples[-min_length:]
+                                
+                                # Data decimation for very large datasets
+                                if min_length > 10000:
+                                    step = min_length // 5000
+                                    data_list = data_list[::step]
+                                    x_data_tuples = x_data_tuples[::step]
+                                
+                                if data_list and x_data_tuples:
+                                    # Extract y-data from current channel and x-data from x-axis channel
+                                    x_data = [x_sample[1] for x_sample in x_data_tuples]  # Use value, not sample number
+                                    y_data = [y_sample[1] for y_sample in data_list]
+                                    curve.setData(x_data, y_data)
+                                else:
+                                    curve.setData([], [])
+                            else:
+                                curve.setData([], [])
                         else:
-                            curve.setData([], [])
+                            # Use sample numbers for x-axis (default behavior)
+                            # Data decimation for very large datasets
+                            if len(data_list) > 10000:
+                                # Show every nth point when dataset is very large
+                                step = len(data_list) // 5000  # Decimate to ~5000 points max
+                                data_list = data_list[::step]
+                            
+                            # Extract coordinates efficiently
+                            if data_list:
+                                x_data, y_data = zip(*data_list)  # More efficient than list comprehensions
+                                curve.setData(x_data, y_data)
+                            else:
+                                curve.setData([], [])
                 else:
                     curve.setData([], [])
         except Exception as e:
@@ -1583,8 +1849,13 @@ For technical support, refer to the README.md file."""
                 self.plot_window.setGeometry(100, 100, 800, 600)
                 
                 self.plot_widget = pg.PlotWidget(title="Serial Data Plot")
-                self.plot_widget.setLabel('left', 'Value')
-                self.plot_widget.setLabel('bottom', 'Sample')
+                
+                # Set initial Y-axis label
+                self.update_y_axis_label()
+                
+                # Set initial X-axis label
+                self.update_x_axis_label()
+                
                 self.plot_widget.showGrid(True, True)
                 self.plot_widget.setBackground('white')
                 
@@ -1605,12 +1876,26 @@ For technical support, refer to the README.md file."""
                 self.plot_curves = {}
                 for i, channel_name in enumerate(self.plot_data.keys()):
                     if PYQTGRAPH_AVAILABLE:
-                        # Use custom thickness and color settings
+                        # Use custom thickness, color, dot size, and line visibility settings
                         thickness = self.channel_thickness.get(channel_name, 2)
                         color = self.channel_colors.get(channel_name, self.plot_colors[i % len(self.plot_colors)])
-                        pen = pg.mkPen(color=color, width=thickness)
-                        curve = self.plot_widget.plot(pen=pen, symbol='o', symbolSize=4, 
-                                                    symbolBrush=color, name=channel_name)
+                        dot_size = self.channel_dot_size.get(channel_name, 4)
+                        show_line = self.channel_show_line.get(channel_name, True)
+                        
+                        # Set up pen (line)
+                        pen = pg.mkPen(color=color, width=thickness) if show_line else None
+                        
+                        # Set up symbol (dots)
+                        symbol = 'o' if dot_size > 0 else None
+                        symbol_size = dot_size if dot_size > 0 else 1
+                        
+                        curve = self.plot_widget.plot(
+                            pen=pen,
+                            symbol=symbol,
+                            symbolSize=symbol_size,
+                            symbolBrush=color,
+                            name=channel_name
+                        )
                     else:
                         # Fallback for dummy mode
                         color = self.channel_colors.get(channel_name, self.plot_colors[i % len(self.plot_colors)])
@@ -1642,14 +1927,39 @@ For technical support, refer to the README.md file."""
         self.channel_thickness.clear()
         self.channel_colors.clear()
         self.channel_custom_names.clear()
+        self.channel_dot_size.clear()
+        self.channel_show_line.clear()
+        
+        # Reset x-axis selection and label
+        self.x_axis_selection = "Sample Number"
+        self.xaxis_var.set("Sample Number")
+        self.xaxis_combo['values'] = ('Sample Number',)
+        self.x_axis_custom_label = ""
+        self.xlabel_var.set("")
+        
+        # Reset y-axis label
+        self.y_axis_custom_label = ""
+        self.ylabel_var.set("")
         
         # Reset global sample counter
         self.global_sample_counter = 0
         
-        # Clear channel controls
+        # Clear channel controls but preserve the Y-axis label frame
         for widget in self.channel_frame.winfo_children():
-            widget.destroy()
-        ttk.Label(self.channel_frame, text="No channels detected").pack()
+            if not isinstance(widget, tk.Frame) or not any(isinstance(child, ttk.Entry) for child in widget.winfo_children()):
+                widget.destroy()
+        
+        # Re-add Y-axis custom label frame if it was destroyed
+        if not any(isinstance(widget, tk.Frame) and any(isinstance(child, ttk.Entry) for child in widget.winfo_children()) for widget in self.channel_frame.winfo_children()):
+            ylabel_frame = tk.Frame(self.channel_frame)
+            ylabel_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            ttk.Label(ylabel_frame, text="Custom Y-Axis Label:").pack(side=tk.LEFT, padx=(0, 5))
+            self.ylabel_var = tk.StringVar(value=self.y_axis_custom_label)
+            self.ylabel_entry = ttk.Entry(ylabel_frame, textvariable=self.ylabel_var, width=25)
+            self.ylabel_entry.pack(side=tk.LEFT, padx=(0, 5))
+            self.ylabel_entry.bind('<Return>', self.on_y_label_changed)
+            self.ylabel_entry.bind('<FocusOut>', self.on_y_label_changed)
         
         # Clear plot if window exists
         if self.plot_widget is not None:
