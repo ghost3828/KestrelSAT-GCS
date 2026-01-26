@@ -1,5 +1,5 @@
 """
-Serial Communication GUI Application
+KestrelSAT Ground Control Station Application
 A comprehensive GUI for interacting with serial devices using tkinter and pyserial.
 """
 
@@ -137,7 +137,7 @@ class ToolTip:
 class SerialGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Serial Communication GUI")
+        self.root.title("USAFA ASTRO - KestrelSAT Ground Control Station")
         self.root.geometry("800x700")
         self.root.resizable(True, True)
         
@@ -175,6 +175,8 @@ class SerialGUI:
         self.x_axis_selection = "Sample Number"  # Default x-axis is sample number
         self.x_axis_custom_label = ""  # Custom X-axis label override
         self.y_axis_custom_label = ""  # Custom Y-axis label override
+        self.plot_title_custom = ""  # Custom plot title override
+        self.plot_title_custom = ""  # Custom plot title override
         
         # Settings
         self.settings = self.load_settings()
@@ -397,7 +399,7 @@ class SerialGUI:
     
     def create_data_frame(self):
         """Create data display and input frame"""
-        data_frame = ttk.LabelFrame(self.connection_frame, text="Data", padding="10")
+        data_frame = ttk.LabelFrame(self.connection_frame, text="Serial Monitor", padding="10")
         data_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Received data display
@@ -448,7 +450,7 @@ class SerialGUI:
     
     def create_control_frame(self):
         """Create control buttons frame"""
-        control_frame = ttk.LabelFrame(self.connection_frame, text="Controls", padding="10")
+        control_frame = ttk.LabelFrame(self.connection_frame, text="Serial Monitor Controls", padding="10")
         control_frame.pack(fill=tk.X, padx=10, pady=5)
         
         # Left side buttons
@@ -984,7 +986,7 @@ class SerialGUI:
     
     def show_about(self):
         """Show about dialog"""
-        about_text = """Serial Communication GUI
+        about_text = """KestrelSAT Ground Control Station
         
 Version: 2.0
 A comprehensive GUI for serial port communication with advanced real-time plotting.
@@ -1005,7 +1007,7 @@ Features:
 
 Built with Python, tkinter, and PyQtGraph for professional data visualization."""
         
-        messagebox.showinfo("About Serial Communication GUI", about_text)
+        messagebox.showinfo("About KestrelSAT Ground Control Station", about_text)
     
     def show_user_guide(self):
         """Show user guide dialog"""
@@ -1146,6 +1148,20 @@ For technical support, refer to the README.md file."""
         # Apply button
         apply_btn = ttk.Button(settings_frame, text="Apply", command=self.update_buffer_settings)
         apply_btn.grid(row=0, column=4, padx=(10, 0))
+        
+        # Clear Buffer button
+        clear_btn = ttk.Button(settings_frame, text="Clear Buffer", command=self.clear_buffer_only)
+        clear_btn.grid(row=0, column=5, padx=(10, 0))
+        ToolTip(clear_btn, "Clear only plot data buffer, preserve all channels and settings")
+        
+        # Custom Plot Title (on second row)
+        ttk.Label(settings_frame, text="Plot Title:").grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(10, 0))
+        self.title_var = tk.StringVar(value=self.plot_title_custom)
+        title_entry = ttk.Entry(settings_frame, textvariable=self.title_var, width=30)
+        title_entry.grid(row=1, column=1, columnspan=2, sticky=tk.W, pady=(10, 0))
+        title_entry.bind('<Return>', self.on_title_changed)
+        title_entry.bind('<FocusOut>', self.on_title_changed)
+        ToolTip(title_entry, "Optional custom title for the plot (leave empty for default)")
         
         # X-Axis selection frame
         xaxis_frame = ttk.LabelFrame(self.plot_frame, text="Set X-Axis", padding="10")
@@ -1332,6 +1348,46 @@ For technical support, refer to the README.md file."""
                         label = "Value"  # Default Y-axis label
                     
                     self.plot_widget.setLabel('left', label)
+            except:
+                pass
+    
+    def on_title_changed(self, event=None):
+        """Handle plot title override change"""
+        self.plot_title_custom = self.title_var.get()
+        self.update_plot_title()
+    
+    def update_plot_title(self):
+        """Update the plot title based on custom override"""
+        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+            try:
+                if PYQTGRAPH_AVAILABLE:
+                    # Use custom title if provided, otherwise use default
+                    if self.plot_title_custom.strip():
+                        title = self.plot_title_custom
+                    else:
+                        title = "Serial Data Plot"  # Default plot title
+                    
+                    self.plot_widget.setTitle(title)
+            except:
+                pass
+    
+    def on_title_changed(self, event=None):
+        """Handle plot title override change"""
+        self.plot_title_custom = self.title_var.get()
+        self.update_plot_title()
+    
+    def update_plot_title(self):
+        """Update the plot title based on custom override"""
+        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+            try:
+                if PYQTGRAPH_AVAILABLE:
+                    # Use custom title if provided, otherwise use default
+                    if self.plot_title_custom.strip():
+                        title = self.plot_title_custom
+                    else:
+                        title = "Serial Data Plot"  # Default plot title
+                    
+                    self.plot_widget.setTitle(title)
             except:
                 pass
     
@@ -1848,7 +1904,10 @@ For technical support, refer to the README.md file."""
                 self.plot_window.setWindowTitle("Serial Data Plot")
                 self.plot_window.setGeometry(100, 100, 800, 600)
                 
-                self.plot_widget = pg.PlotWidget(title="Serial Data Plot")
+                self.plot_widget = pg.PlotWidget()
+                
+                # Set initial plot title
+                self.update_plot_title()
                 
                 # Set initial Y-axis label
                 self.update_y_axis_label()
@@ -1920,26 +1979,18 @@ For technical support, refer to the README.md file."""
             self.plot_status_label.config(text=f"Error creating plot window: {str(e)}")
     
     def clear_plot_data(self):
-        """Clear all plot data"""
+        """Clear plot data and buffer only, preserve all settings and UI"""
+        # Clear only the actual plot data
         self.plot_data.clear()
         self.plot_curves.clear()
+        
+        # Clear channel-related data
         self.channel_visibility.clear()
         self.channel_thickness.clear()
         self.channel_colors.clear()
         self.channel_custom_names.clear()
         self.channel_dot_size.clear()
         self.channel_show_line.clear()
-        
-        # Reset x-axis selection and label
-        self.x_axis_selection = "Sample Number"
-        self.xaxis_var.set("Sample Number")
-        self.xaxis_combo['values'] = ('Sample Number',)
-        self.x_axis_custom_label = ""
-        self.xlabel_var.set("")
-        
-        # Reset y-axis label
-        self.y_axis_custom_label = ""
-        self.ylabel_var.set("")
         
         # Reset global sample counter
         self.global_sample_counter = 0
@@ -1961,7 +2012,9 @@ For technical support, refer to the README.md file."""
             self.ylabel_entry.bind('<Return>', self.on_y_label_changed)
             self.ylabel_entry.bind('<FocusOut>', self.on_y_label_changed)
         
-        # Clear plot if window exists
+        ttk.Label(self.channel_frame, text="No channels detected").pack()
+        
+        # Clear plot if window exists but preserve settings
         if self.plot_widget is not None:
             # Remove existing legend first
             if hasattr(self, 'plot_legend') and self.plot_legend is not None:
@@ -1983,7 +2036,29 @@ For technical support, refer to the README.md file."""
             else:
                 self.plot_legend = None
         
-        self.plot_status_label.config(text="Plot data cleared")
+        self.plot_status_label.config(text="Plot data and channels cleared - axis labels preserved")
+    
+    def clear_buffer_only(self):
+        """Clear only plot data buffer, preserve all channels and settings"""
+        # Keep one sample for each channel to preserve channel structure
+        for channel_name in list(self.plot_data.keys()):
+            if len(self.plot_data[channel_name]) > 0:
+                # Keep only the last sample
+                last_value = self.plot_data[channel_name][-1]
+                self.plot_data[channel_name].clear()
+                self.plot_data[channel_name].append(last_value)
+        
+        # Reset global sample counter but keep it at 1 if we have data
+        if self.plot_data:
+            self.global_sample_counter = 1
+        else:
+            self.global_sample_counter = 0
+        
+        # Update plot display to show only the remaining samples
+        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+            self.update_plot_display()
+        
+        self.plot_status_label.config(text="Buffer cleared - channels preserved")
 
 
 def main():
