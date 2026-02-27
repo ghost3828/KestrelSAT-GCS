@@ -1,5 +1,5 @@
 {
-  "port": "COM31",
+  "port": "COM32",
   "baud_rate": 115200,
   "data_bits": 8,
   "parity": "None",

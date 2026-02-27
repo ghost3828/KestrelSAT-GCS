@@ -176,7 +176,6 @@ class SerialGUI:
         self.x_axis_custom_label = ""  # Custom X-axis label override
         self.y_axis_custom_label = ""  # Custom Y-axis label override
         self.plot_title_custom = ""  # Custom plot title override
-        self.plot_title_custom = ""  # Custom plot title override
         
         # Settings
         self.settings = self.load_settings()
@@ -478,13 +477,16 @@ class SerialGUI:
         """Update the list of available serial ports"""
         ports = [port.device for port in serial.tools.list_ports.comports()]
         
-        # Add test mode option
-        ports.insert(0, "TEST MODE")
-        
-        self.port_combo['values'] = ports
-        
-        if ports and not self.port_var.get():
-            self.port_var.set(ports[0])
+        # Add test mode option at the end if there are no real ports
+        if ports:
+            # Real ports available - set default to first available port
+            self.port_combo['values'] = ports + ["TEST MODE"]
+            if not self.port_var.get() or self.port_var.get() == "TEST MODE":
+                self.port_var.set(ports[0])
+        else:
+            # No real ports - offer only TEST MODE as default
+            self.port_combo['values'] = ["TEST MODE"]
+            self.port_var.set("TEST MODE")
     
     def get_parity(self) -> str:
         """Convert parity string to pyserial constant"""
@@ -1367,27 +1369,7 @@ For technical support, refer to the README.md file."""
                     else:
                         title = "Serial Data Plot"  # Default plot title
                     
-                    self.plot_widget.setTitle(title)
-            except:
-                pass
-    
-    def on_title_changed(self, event=None):
-        """Handle plot title override change"""
-        self.plot_title_custom = self.title_var.get()
-        self.update_plot_title()
-    
-    def update_plot_title(self):
-        """Update the plot title based on custom override"""
-        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
-            try:
-                if PYQTGRAPH_AVAILABLE:
-                    # Use custom title if provided, otherwise use default
-                    if self.plot_title_custom.strip():
-                        title = self.plot_title_custom
-                    else:
-                        title = "Serial Data Plot"  # Default plot title
-                    
-                    self.plot_widget.setTitle(title)
+                    self.plot_widget.setTitle(title) # type: ignore
             except:
                 pass
     
@@ -1589,6 +1571,22 @@ For technical support, refer to the README.md file."""
     def toggle_channel_visibility(self, channel_name: str, visible: bool):
         """Toggle visibility of a plot channel"""
         self.channel_visibility[channel_name] = visible
+        
+        # Update legend to show/hide the channel
+        if (hasattr(self, 'plot_legend') and self.plot_legend is not None and 
+            channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None):
+            try:
+                if PYQTGRAPH_AVAILABLE:
+                    # Rebuild legend based on current visibility
+                    self.plot_legend.clear() # type: ignore
+                    for ch_name, ch_curve in self.plot_curves.items():
+                        # Only add to legend if channel is visible
+                        if self.channel_visibility.get(ch_name, True):
+                            ch_display_name = self.channel_custom_names.get(ch_name, ch_name)
+                            self.plot_legend.addItem(ch_curve, ch_display_name)
+            except Exception as e:
+                pass
+        
         self.schedule_plot_update()  # Use throttled update
     
     def schedule_plot_update(self):
@@ -1716,17 +1714,21 @@ For technical support, refer to the README.md file."""
             if (self.x_axis_selection == channel_name and not self.x_axis_custom_label.strip()):
                 self.update_x_axis_label()
             
+            # Update x-axis dropdown with new display name
+            self.update_xaxis_dropdown()
+            
             # Update legend if it exists and plot widget is available
             if (hasattr(self, 'plot_legend') and self.plot_legend is not None and 
                 channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None):
                 try:
                     if PYQTGRAPH_AVAILABLE:
-                        # Remove old legend item
-                        self.plot_legend.removeItem(channel_name)
-                        # Add new legend item with custom name
-                        curve = self.plot_curves[channel_name]
-                        self.plot_legend.addItem(curve, self.channel_custom_names[channel_name])
-                except:
+                        # Rebuild legend with updated names
+                        self.plot_legend.clear() # type: ignore
+                        for ch_name, ch_curve in self.plot_curves.items():
+                            ch_display_name = self.channel_custom_names.get(ch_name, ch_name)
+                            self.plot_legend.addItem(ch_curve, ch_display_name)
+                except Exception as e:
+                    # Silently fail - legend update is non-critical
                     pass
         else:
             # Reset to original name if empty

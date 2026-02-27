@@ -10,7 +10,7 @@ if exist build rmdir /s /q build
 if exist *.spec del *.spec
 
 REM Build the executable
-py pyinstaller --onefile --windowed --name "SerialGUI" ^
+pyinstaller --onefile --windowed --name "SerialGUI" ^
     --hidden-import "PyQt5.QtCore" ^
     --hidden-import "PyQt5.QtWidgets" ^
     --hidden-import "pyqtgraph" ^
