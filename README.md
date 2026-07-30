@@ -1,27 +1,36 @@
-# Serial Communication GUI
+# KestrelSAT Ground Control Station
 
-A comprehensive Python GUI application for serial port communication built with tkinter and pyserial.
+A Python GUI for talking to serial devices and plotting their telemetry in real time.
+Built for the USAFA ASTRO space systems engineering course.
+
+The interface is tkinter/ttk; the plot opens in a separate PyQtGraph window for fast,
+interactive rendering of live data.
 
 ## Features
 
-- **Connection Management**: Easy connection/disconnection with visual status indicators
+- **Connection Management**: Connect and disconnect with a visual status indicator
 - **Port Detection**: Automatic detection and listing of available serial ports
-- **Flexible Configuration**: Support for various baud rates, data bits, parity, and stop bits
-- **Real-time Data**: Live data reception with threading for non-blocking operation
-- **Data Display Options**: 
-  - Text or hexadecimal display modes
-  - Timestamps for all messages
-  - Auto-scroll functionality
-- **Data Transmission**: Send text data with optional line endings
-- **Logging**: Save received data to text files
+- **Flexible Configuration**: Baud rate, data bits, parity, and stop bits
+- **Test Mode**: Generates synthetic telemetry so the app can be used without hardware
+- **Real-time Data**: Live reception on a background thread, so the GUI stays responsive
+- **Data Display Options**: Text or hexadecimal, optional timestamps, auto-scroll
+- **Data Transmission**: Send text with optional line endings
+- **Real-time Plotting**: Multi-channel plots with per-channel colours, thickness, dot
+  size, custom names, and visibility toggles
+- **Logging**: Continuous logging to file with a live file-size readout, plus one-shot
+  display captures
 - **Appearance Themes**: Dark, Light, and High Contrast, applied instantly without restarting
-- **Settings Persistence**: Automatically saves and restores connection settings
+- **Status Bar**: Connection status and samples-per-second
 
 ## Requirements
 
-- Python 3.6 or higher
-- tkinter (usually included with Python)
-- pyserial
+- Python 3.10 or newer (required by the pinned `pyqtgraph`)
+- tkinter (bundled with the standard Windows and macOS Python installers; on Debian or
+  Ubuntu install `python3-tk`)
+- The packages in `requirements.txt`: `pyserial`, `pyqtgraph`, `PyQt5`
+
+PyQtGraph and PyQt5 are only needed for the plot window. If they are missing the app still
+starts and the serial monitor works; plotting is disabled with a warning on the console.
 
 ## Installation
 
@@ -35,13 +44,20 @@ pip install -r requirements.txt
 python serial_gui.py
 ```
 
+To list the serial ports visible to Python without launching the GUI:
+```bash
+python check_ports.py
+```
+
 ## Usage
 
 ### Connecting to a Device
 
-1. **Select Port**: Choose your serial device from the dropdown or click "Refresh" to update the list
-2. **Configure Settings**: Set baud rate, data bits, parity, and stop bits as needed
-3. **Connect**: Click the "Connect" button to establish the connection
+1. **Select Port**: Choose your device from the dropdown, or click "Refresh" to rescan.
+   Choose `TEST MODE` to run against simulated data with no hardware attached.
+2. **Configure Settings**: Set the baud rate, and use "Configure Serial Settings" for data
+   bits, parity, and stop bits.
+3. **Connect**: Click "Connect". Leave "Clear on Connect" enabled for a clean start.
 
 ### Sending Data
 
@@ -51,16 +67,33 @@ python serial_gui.py
 
 ### Receiving Data
 
-- Received data appears in the main display area
-- Toggle between text and hex display modes
-- Use timestamps to track when data was received
-- Auto-scroll keeps the latest data visible
+- Received data appears in the Serial Monitor on the Connection tab
+- Toggle between text and hex display
+- Enable timestamps to see when each line arrived
+- Auto-scroll keeps the newest data visible
 
-### Additional Features
+### Plotting
 
-- **Clear Display**: Remove all received data from the display
-- **Save Log**: Export the current session to a text file
-- **Settings**: Connection settings are automatically saved and restored
+The Plot tab configures the plot; "Show Plot Window" opens it in its own window.
+
+1. **Data format**: send one sample per line as delimited values. Named channels work too,
+   for example `Temp:25.5,Humidity:67`. Unnamed values are named `Ch1`, `Ch2`, ... by position.
+2. **Delimiter**: comma, space, tab, or a custom character.
+3. **Buffer Size** is how many samples are retained; **Plot Width** is how many are shown.
+4. **X-Axis** can be the sample number or any detected channel, so you can plot one channel
+   against another. Axis labels and the plot title can be overridden.
+5. **Per-channel controls** appear as channels are detected: visibility, display name, line
+   thickness, colour, dot size, and whether to draw the connecting line.
+6. **Pause Plot** freezes the display while data keeps being collected. **Clear Plot Data**
+   drops the channels and their settings; **Clear Buffer** keeps the channels and discards
+   all but the most recent sample of each.
+
+### Logging
+
+- "Start Logging" writes everything received to a file continuously, and the header shows
+  the current file size
+- "Save Log" captures the current contents of the display in one shot
+- Both default to the `logs/` folder, created next to wherever the app is launched from
 
 ## Configuration Options
 
@@ -81,10 +114,10 @@ same setting, the change applies immediately, and your choice is remembered betw
   for reading the screen outdoors in direct sun.
 
 The theme covers the plot window as well: background, axes, grid, legend, and the default
-channel trace colors all follow it. A color you pick yourself for a channel is left alone.
+channel trace colours all follow it. A colour you pick yourself for a channel is left alone.
 
-Note that Windows' own file, color, and message dialogs are drawn by the operating system
-and cannot be themed, so those still appear in the system's colors.
+Note that Windows' own file, colour, and message dialogs are drawn by the operating system
+and cannot be themed, so those still appear in the system's colours.
 
 ### Display Options
 - **Timestamps**: Add time stamps to all messages
@@ -95,6 +128,17 @@ and cannot be themed, so those still appear in the system's colors.
 - **Add newline (\\n)**: Append newline character to sent data
 - **Add carriage return (\\r)**: Append carriage return character to sent data
 
+## Building a Windows executable
+
+`build_exe.bat` runs PyInstaller against the project's `.venv`, or build from the spec:
+
+```bat
+pyinstaller KestrelSAT_GCS_v1.spec
+```
+
+The result lands in `dist/`. Themes are defined in the source, so no extra data files need
+to be bundled.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -103,6 +147,11 @@ and cannot be themed, so those still appear in the system's colors.
 2. **No Ports Listed**: Check if your device drivers are installed correctly
 3. **Connection Lost**: Verify physical connection and device power
 4. **Garbled Text**: Check baud rate and other serial parameters match your device
+5. **Nothing plots**: Confirm the delimiter matches your data, and that each line is a
+   complete sample. The plot is cleared once after the first line arrives, since that line
+   is often a partial fragment left in the device's buffer.
+6. **"PyQtGraph not available"**: Install the plotting dependencies with
+   `pip install pyqtgraph PyQt5`
 
 ### Error Messages
 
@@ -114,16 +163,23 @@ and cannot be themed, so those still appear in the system's colors.
 
 ```
 serial_gui.py              # Main application file
+check_ports.py             # Standalone serial port lister
 requirements.txt           # Python dependencies
-README.md                 # This file
-serial_gui_settings.json  # Auto-generated settings file (created after first use)
+build_exe.bat              # Windows executable build script
+KestrelSAT_GCS_v1.spec     # PyInstaller spec for the current build
+README.md                  # This file
+serial_gui_settings.json   # Auto-generated settings file (created after first use)
+logs/                      # Auto-generated default folder for log files
 ```
+
+Settings and logs are written relative to the working directory the app was launched from.
 
 ## Technical Details
 
-- Built with Python's tkinter for cross-platform compatibility
-- Uses pyserial for robust serial communication
-- Threading ensures the GUI remains responsive during data reception
+- tkinter/ttk for the main interface, PyQtGraph for the plot window
+- pyserial for serial communication
+- Reception runs on a background thread so the GUI stays responsive
+- Plot redraws are throttled to roughly 30 FPS regardless of incoming sample rate
 - JSON-based settings storage for user preferences
 - Error handling for common serial communication issues
 
