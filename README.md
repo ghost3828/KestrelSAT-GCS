@@ -14,6 +14,7 @@ A comprehensive Python GUI application for serial port communication built with 
   - Auto-scroll functionality
 - **Data Transmission**: Send text data with optional line endings
 - **Logging**: Save received data to text files
+- **Appearance Themes**: Dark, Light, and High Contrast, applied instantly without restarting
 - **Settings Persistence**: Automatically saves and restores connection settings
 
 ## Requirements
@@ -69,6 +70,21 @@ python serial_gui.py
 - **Data Bits**: Number of data bits per character (5-8)
 - **Parity**: Error checking method (None, Even, Odd, Mark, Space)
 - **Stop Bits**: Number of stop bits (1, 1.5, 2)
+
+### Appearance
+Pick a theme from **Options → Appearance**, or from **Options → Preferences**. Both use the
+same setting, the change applies immediately, and your choice is remembered between sessions.
+
+- **Dark (Mission Control)** — the default. Deep-space blues with cyan and amber accents.
+- **Light** — a conventional light theme for well-lit indoor use and for screenshots.
+- **High Contrast (Sunlight)** — black on white with heavy borders and thicker plot traces,
+  for reading the screen outdoors in direct sun.
+
+The theme covers the plot window as well: background, axes, grid, legend, and the default
+channel trace colors all follow it. A color you pick yourself for a channel is left alone.
+
+Note that Windows' own file, color, and message dialogs are drawn by the operating system
+and cannot be themed, so those still appear in the system's colors.
 
 ### Display Options
 - **Timestamps**: Add time stamps to all messages

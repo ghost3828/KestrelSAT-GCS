@@ -4,7 +4,7 @@ A comprehensive GUI for interacting with serial devices using tkinter and pyseri
 """
 
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, filedialog, colorchooser
+from tkinter import ttk, messagebox, filedialog, colorchooser
 try:
     import serial
     import serial.tools.list_ports
@@ -14,8 +14,7 @@ except ImportError:
 try:
     import pyqtgraph as pg
     from PyQt5 import QtWidgets, QtCore
-    pg.setConfigOption('background', 'w')
-    pg.setConfigOption('foreground', 'k')
+    # NOTE: background/foreground are set by ThemeManager once settings are loaded.
     PYQTGRAPH_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: PyQtGraph not available: {e}")
@@ -90,7 +89,184 @@ import os
 import random
 import re
 from collections import deque
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable, List
+
+
+# ---------------------------------------------------------------------------
+# Appearance themes
+# ---------------------------------------------------------------------------
+SETTINGS_FILE = "serial_gui_settings.json"
+DEFAULT_THEME = "dark"
+THEME_ORDER = ("dark", "light", "high_contrast")
+
+THEMES: Dict[str, Dict[str, Any]] = {
+    # -- Dark: deep-space / mission-control ---------------------------------
+    "dark": {
+        "display_name": "Dark (Mission Control)",
+        "ttk_base": "clam",
+        # surfaces
+        "bg": "#0B0F17",           # window base - deep space
+        "surface": "#131A26",      # panels, label frames, status bar
+        "surface_alt": "#1B2433",  # buttons, tab strip, scrollbars
+        "field_bg": "#0E141E",     # entries, spinboxes, combobox field
+        # borders
+        "border": "#27374D",
+        "border_light": "#1E2836",
+        # text
+        "fg": "#DCE6F2",
+        "fg_muted": "#8FA3BC",
+        "fg_disabled": "#55647A",
+        "fg_on_accent": "#06121C",
+        # interactive
+        "accent": "#38BDF8",
+        "accent_hover": "#7DD3FC",
+        "accent_active": "#0EA5E9",
+        "select_bg": "#1E3A5F",
+        "select_fg": "#E6F1FF",
+        "button_bg": "#1B2433",
+        "button_hover": "#243244",
+        "button_active": "#2E4257",
+        "button_relief": "flat",
+        "button_border_width": 1,
+        # semantic
+        "ok": "#34D399",
+        "ok_dim": "#166E52",
+        "error": "#FF5C6C",
+        "error_dim": "#8B1E2B",
+        "warn": "#FFB020",
+        # serial monitor
+        "log_bg": "#0E141E",
+        "log_fg": "#C7D4E4",
+        "log_received": "#7FD1FF",
+        "log_sent": "#FFB86B",
+        "log_system": "#DCE6F2",
+        "log_error": "#FF6B7A",
+        # tooltip
+        "tooltip_bg": "#1B2433",
+        "tooltip_fg": "#DCE6F2",
+        "tooltip_border": "#38BDF8",
+        # pyqtgraph
+        "plot_bg": "#0B0F17",
+        "plot_fg": "#DCE6F2",
+        "plot_axis": "#7C8FA6",
+        "plot_grid_alpha": 0.25,
+        "plot_legend_bg": "#131A26E0",
+        "plot_legend_border": "#27374D",
+        "plot_palette": ["#38BDF8", "#FFB020", "#34D399", "#F472B6",
+                         "#A78BFA", "#FF7A5C", "#E2E8F0", "#9EF01A"],
+        "default_line_width": 2,
+    },
+
+    # -- Light ---------------------------------------------------------------
+    "light": {
+        "display_name": "Light",
+        "ttk_base": "clam",
+        "bg": "#F4F6F9",
+        "surface": "#FFFFFF",
+        "surface_alt": "#E8ECF2",
+        "field_bg": "#FFFFFF",
+        "border": "#C9D2DD",
+        "border_light": "#E2E8F0",
+        "fg": "#1B2430",
+        "fg_muted": "#5A6779",
+        "fg_disabled": "#9AA5B4",
+        "fg_on_accent": "#FFFFFF",
+        "accent": "#0B63CE",
+        "accent_hover": "#1D77E6",
+        "accent_active": "#094FA6",
+        "select_bg": "#CDE2FF",
+        "select_fg": "#10243D",
+        "button_bg": "#E8ECF2",
+        "button_hover": "#DCE3EC",
+        "button_active": "#CBD5E1",
+        "button_relief": "flat",
+        "button_border_width": 1,
+        "ok": "#14804A",
+        "ok_dim": "#0B4F2E",
+        "error": "#C62828",
+        "error_dim": "#7F1D1D",
+        "warn": "#B45309",
+        "log_bg": "#FFFFFF",
+        "log_fg": "#1B2430",
+        "log_received": "#1148A8",
+        "log_sent": "#B3261E",
+        "log_system": "#1B2430",
+        "log_error": "#C62828",
+        "tooltip_bg": "#FFFFE1",
+        "tooltip_fg": "#1B2430",
+        "tooltip_border": "#8A8A6B",
+        "plot_bg": "#FFFFFF",
+        "plot_fg": "#1B2430",
+        "plot_axis": "#4A5568",
+        "plot_grid_alpha": 0.20,
+        "plot_legend_bg": "#FFFFFFE0",
+        "plot_legend_border": "#C9D2DD",
+        # tab10 hues, with orange and pink darkened to clear 3:1 on white
+        "plot_palette": ["#D62728", "#1F77B4", "#2CA02C", "#C25E00",
+                         "#9467BD", "#8C564B", "#C2408F", "#7F7F7F"],
+        "default_line_width": 2,
+    },
+
+    # -- High contrast: for outdoor / direct-sunlight use ---------------------
+    "high_contrast": {
+        "display_name": "High Contrast (Sunlight)",
+        "ttk_base": "clam",
+        "bg": "#FFFFFF",
+        "surface": "#FFFFFF",
+        "surface_alt": "#FFFFFF",
+        "field_bg": "#FFFFFF",
+        "border": "#000000",
+        "border_light": "#000000",
+        "fg": "#000000",
+        "fg_muted": "#000000",
+        "fg_disabled": "#595959",
+        "fg_on_accent": "#FFFFFF",
+        "accent": "#0033CC",
+        "accent_hover": "#0029A3",
+        "accent_active": "#001F7A",
+        "select_bg": "#000000",
+        "select_fg": "#FFFFFF",
+        "button_bg": "#FFFFFF",
+        "button_hover": "#E0E0E0",
+        "button_active": "#000000",
+        # white-on-white needs an explicit outline to read as a button
+        "button_relief": "solid",
+        "button_border_width": 2,
+        "ok": "#00661A",
+        "ok_dim": "#003D0F",
+        "error": "#B00020",
+        "error_dim": "#6B0014",
+        "warn": "#6B3A00",
+        "log_bg": "#FFFFFF",
+        "log_fg": "#000000",
+        "log_received": "#0033CC",
+        "log_sent": "#B00020",
+        "log_system": "#000000",
+        "log_error": "#B00020",
+        "tooltip_bg": "#FFFFFF",
+        "tooltip_fg": "#000000",
+        "tooltip_border": "#000000",
+        "plot_bg": "#FFFFFF",
+        "plot_fg": "#000000",
+        "plot_axis": "#000000",
+        "plot_grid_alpha": 0.45,
+        "plot_legend_bg": "#FFFFFFF0",
+        "plot_legend_border": "#000000",
+        "plot_palette": ["#000000", "#0033CC", "#C41200", "#006B27",
+                         "#7A00B8", "#A34F00", "#00666B", "#B5006E"],
+        "default_line_width": 3,
+    },
+}
+
+# Every theme must expose exactly the same tokens - a missing key would only
+# surface as a KeyError halfway through a live theme switch.
+assert all(set(t) == set(THEMES[DEFAULT_THEME]) for t in THEMES.values()), \
+    "THEMES entries have mismatched keys"
+assert set(THEME_ORDER) == set(THEMES), "THEME_ORDER does not match THEMES"
+
+# Active palette. Read directly by code that runs outside SerialGUI (ToolTip)
+# or that colours non-widget objects (canvas items, pyqtgraph pens).
+CURRENT_THEME: Dict[str, Any] = THEMES[DEFAULT_THEME]
 
 
 class ToolTip:
@@ -120,9 +296,14 @@ class ToolTip:
         label = tk.Label(
             self.tooltip_window,
             text=self.text,
-            background="#ffffdd",
-            relief="solid",
-            borderwidth=1,
+            background=CURRENT_THEME["tooltip_bg"],
+            foreground=CURRENT_THEME["tooltip_fg"],
+            highlightbackground=CURRENT_THEME["tooltip_border"],
+            highlightthickness=1,
+            relief="flat",
+            borderwidth=0,
+            padx=4,
+            pady=2,
             font=("Arial", 9)
         )
         label.pack()
@@ -132,6 +313,284 @@ class ToolTip:
         if self.tooltip_window:
             self.tooltip_window.destroy()
             self.tooltip_window = None
+
+
+class ThemeManager:
+    """Applies a THEMES entry to a live tkinter/ttk widget tree.
+
+    ttk widgets repaint themselves whenever the style database changes, so they
+    need no per-widget work. Classic tk widgets (Menu, Canvas, Text, Scrollbar,
+    the tooltip Label, the channel colour swatches) do not participate in ttk
+    theming at all and are recoloured by walking the widget tree.
+    """
+
+    def __init__(self, root: tk.Tk, theme_name: str = DEFAULT_THEME):
+        self.root = root
+        self.style = ttk.Style(root)
+        self.name = theme_name if theme_name in THEMES else DEFAULT_THEME
+        self.colors = THEMES[self.name]
+        self._listeners: List[Callable[[Dict[str, Any]], None]] = []
+
+    # -- public API ---------------------------------------------------------
+    def add_listener(self, fn: Callable[[Dict[str, Any]], None]):
+        """Register a callback fired after every apply() with the new palette."""
+        self._listeners.append(fn)
+
+    def exempt(self, widget):
+        """Mark a widget so the tree walk never recolours it."""
+        try:
+            widget._no_theme = True
+        except Exception:
+            pass
+
+    def restyle(self, widget):
+        """Re-apply the active theme to one subtree (new dialogs, new rows)."""
+        try:
+            self._walk(widget, self.colors)
+        except Exception:
+            pass
+
+    def apply(self, theme_name: Optional[str] = None):
+        """Apply a theme to the whole application. Main thread only."""
+        global CURRENT_THEME
+
+        if theme_name is not None:
+            self.name = theme_name if theme_name in THEMES else DEFAULT_THEME
+        self.colors = THEMES[self.name]
+        CURRENT_THEME = self.colors
+        c = self.colors
+
+        # 1. Base ttk theme. Only 'clam' honours full recolouring of every
+        #    element; the native Windows themes ignore -background on buttons,
+        #    entries and notebook tabs. theme_use() resets the style database,
+        #    so _configure_ttk() must always run after it.
+        base = c.get("ttk_base", "clam")
+        try:
+            if self.style.theme_use() != base:
+                self.style.theme_use(base)
+        except tk.TclError:
+            pass  # keep whatever theme is active
+
+        self._configure_ttk(c)
+        self._configure_option_db(c)
+
+        try:
+            self.root.configure(bg=c["bg"])
+        except tk.TclError:
+            pass
+
+        self._walk(self.root, c)
+
+        for fn in self._listeners:
+            try:
+                fn(c)
+            except Exception:
+                pass
+
+    # -- ttk style database -------------------------------------------------
+    def _configure_ttk(self, c: Dict[str, Any]):
+        s = self.style
+
+        s.configure(".",
+                    background=c["surface"], foreground=c["fg"],
+                    fieldbackground=c["field_bg"], bordercolor=c["border"],
+                    lightcolor=c["surface_alt"], darkcolor=c["surface_alt"],
+                    troughcolor=c["bg"], arrowcolor=c["fg"],
+                    focuscolor=c["accent"], insertcolor=c["fg"],
+                    selectbackground=c["select_bg"], selectforeground=c["select_fg"])
+
+        s.configure("TFrame", background=c["surface"])
+        s.configure("TLabel", background=c["surface"], foreground=c["fg"])
+
+        s.configure("TButton", background=c["button_bg"], foreground=c["fg"],
+                    bordercolor=c["border"], lightcolor=c["button_bg"],
+                    darkcolor=c["button_bg"], relief=c["button_relief"],
+                    borderwidth=c["button_border_width"], padding=(8, 4))
+        s.map("TButton",
+              background=[("pressed", c["button_active"]),
+                          ("active", c["button_hover"]),
+                          ("disabled", c["surface"])],
+              foreground=[("disabled", c["fg_disabled"])],
+              bordercolor=[("focus", c["accent"])])
+
+        s.configure("TEntry", fieldbackground=c["field_bg"], foreground=c["fg"],
+                    bordercolor=c["border"], insertcolor=c["fg"], padding=3)
+        s.map("TEntry",
+              fieldbackground=[("disabled", c["surface"]), ("readonly", c["surface"])],
+              foreground=[("disabled", c["fg_disabled"])],
+              bordercolor=[("focus", c["accent"])])
+
+        s.configure("TCombobox", fieldbackground=c["field_bg"],
+                    background=c["button_bg"], foreground=c["fg"],
+                    arrowcolor=c["fg"], bordercolor=c["border"], padding=3)
+        s.map("TCombobox",
+              fieldbackground=[("readonly", c["field_bg"]), ("disabled", c["surface"])],
+              foreground=[("readonly", c["fg"]), ("disabled", c["fg_disabled"])],
+              # without these a readonly combobox paints a solid highlight block
+              selectbackground=[("readonly", c["field_bg"])],
+              selectforeground=[("readonly", c["fg"])],
+              arrowcolor=[("disabled", c["fg_disabled"])],
+              bordercolor=[("focus", c["accent"])])
+
+        s.configure("TSpinbox", fieldbackground=c["field_bg"], foreground=c["fg"],
+                    background=c["button_bg"], arrowcolor=c["fg"],
+                    bordercolor=c["border"], padding=2)
+        s.map("TSpinbox",
+              fieldbackground=[("disabled", c["surface"])],
+              foreground=[("disabled", c["fg_disabled"])])
+
+        for cls in ("TCheckbutton", "TRadiobutton"):
+            s.configure(cls, background=c["surface"], foreground=c["fg"],
+                        indicatorbackground=c["field_bg"],
+                        indicatorforeground=c["accent"],
+                        focuscolor=c["accent"])
+            s.map(cls,
+                  background=[("active", c["surface"])],
+                  foreground=[("disabled", c["fg_disabled"])],
+                  indicatorbackground=[("selected", c["accent"]),
+                                       ("pressed", c["button_active"]),
+                                       ("!selected", c["field_bg"])],
+                  indicatorforeground=[("selected", c["fg_on_accent"])])
+
+        s.configure("TNotebook", background=c["bg"], bordercolor=c["border"],
+                    tabmargins=(2, 4, 2, 0))
+        s.configure("TNotebook.Tab", background=c["surface_alt"],
+                    foreground=c["fg_muted"], bordercolor=c["border"],
+                    lightcolor=c["surface_alt"], padding=(12, 6))
+        s.map("TNotebook.Tab",
+              background=[("selected", c["surface"]), ("active", c["button_hover"])],
+              foreground=[("selected", c["fg"]), ("disabled", c["fg_disabled"])],
+              expand=[("selected", (1, 1, 1, 0))])
+
+        s.configure("TLabelframe", background=c["surface"], bordercolor=c["border"],
+                    lightcolor=c["border"], darkcolor=c["border"], relief="solid")
+        s.configure("TLabelframe.Label", background=c["surface"], foreground=c["accent"])
+
+        s.configure("TScrollbar", background=c["surface_alt"], troughcolor=c["bg"],
+                    bordercolor=c["border"], arrowcolor=c["fg_muted"],
+                    relief="flat", gripcount=0)
+        s.map("TScrollbar",
+              background=[("pressed", c["accent_active"]), ("active", c["button_hover"])],
+              arrowcolor=[("pressed", c["accent"])])
+
+        # Semantic label styles
+        s.configure("Status.TLabel", background=c["surface"], foreground=c["fg"])
+        s.configure("Ok.TLabel", background=c["surface"], foreground=c["ok"])
+        s.configure("Error.TLabel", background=c["surface"], foreground=c["error"])
+
+    # -- option database (applies to widgets created later) -----------------
+    def _configure_option_db(self, c: Dict[str, Any]):
+        try:
+            o = self.root.option_add
+            o("*Menu.background", c["surface"])
+            o("*Menu.foreground", c["fg"])
+            o("*Menu.activeBackground", c["accent"])
+            o("*Menu.activeForeground", c["fg_on_accent"])
+            o("*Menu.selectColor", c["accent"])
+            o("*Menu.relief", "flat")
+            o("*TCombobox*Listbox.background", c["field_bg"])
+            o("*TCombobox*Listbox.foreground", c["fg"])
+            o("*TCombobox*Listbox.selectBackground", c["select_bg"])
+            o("*TCombobox*Listbox.selectForeground", c["select_fg"])
+        except tk.TclError:
+            pass
+
+    # -- widget tree walk ---------------------------------------------------
+    def _walk(self, widget, c: Dict[str, Any]):
+        if getattr(widget, "_no_theme", False):
+            return
+        if isinstance(widget, ttk.Combobox):
+            self._theme_combobox_popdown(widget, c)
+        elif not isinstance(widget, ttk.Widget):
+            self._style_classic(widget, c)
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            return
+        for child in children:
+            self._walk(child, c)
+
+    def _style_classic(self, w, c: Dict[str, Any]):
+        cls = w.winfo_class()
+        try:
+            if cls in ("Tk", "Toplevel"):
+                w.configure(bg=c["bg"])
+            elif cls in ("Frame", "Labelframe"):
+                w.configure(bg=c["surface"], highlightbackground=c["border"])
+            elif cls == "Label":
+                w.configure(bg=c["surface"], fg=c["fg"])
+            elif cls == "Button":
+                w.configure(bg=c["button_bg"], fg=c["fg"],
+                            activebackground=c["button_hover"],
+                            activeforeground=c["fg"],
+                            highlightbackground=c["surface"],
+                            relief="flat", bd=1)
+            elif cls == "Canvas":
+                w.configure(bg=c["surface"], highlightthickness=0)
+            elif cls == "Text":
+                w.configure(bg=c["log_bg"], fg=c["log_fg"],
+                            insertbackground=c["fg"],
+                            selectbackground=c["select_bg"],
+                            selectforeground=c["select_fg"],
+                            highlightbackground=c["border"],
+                            highlightcolor=c["accent"],
+                            bd=0, relief="flat")
+            elif cls == "Scrollbar":
+                w.configure(bg=c["surface_alt"], troughcolor=c["bg"],
+                            activebackground=c["accent"],
+                            highlightbackground=c["surface"],
+                            bd=0, relief="flat")
+            elif cls == "Listbox":
+                w.configure(bg=c["field_bg"], fg=c["fg"],
+                            selectbackground=c["select_bg"],
+                            selectforeground=c["select_fg"],
+                            highlightbackground=c["border"], bd=0)
+            elif cls == "Menu":
+                w.configure(bg=c["surface"], fg=c["fg"],
+                            activebackground=c["accent"],
+                            activeforeground=c["fg_on_accent"],
+                            disabledforeground=c["fg_disabled"],
+                            selectcolor=c["accent"],
+                            bd=0, relief="flat")
+            elif cls in ("Entry", "Spinbox"):
+                w.configure(bg=c["field_bg"], fg=c["fg"],
+                            insertbackground=c["fg"],
+                            selectbackground=c["select_bg"],
+                            selectforeground=c["select_fg"],
+                            highlightbackground=c["border"], bd=1, relief="flat")
+        except tk.TclError:
+            pass
+
+    def _theme_combobox_popdown(self, widget, c: Dict[str, Any]):
+        """Recolour an existing combobox dropdown.
+
+        The popdown listbox is created by Tk itself, so the option database
+        cannot retrofit comboboxes that already exist.
+        """
+        try:
+            popdown = self.root.tk.eval("ttk::combobox::PopdownWindow %s" % widget)
+            self.root.tk.call("%s.f.l" % popdown, "configure",
+                              "-background", c["field_bg"],
+                              "-foreground", c["fg"],
+                              "-selectbackground", c["select_bg"],
+                              "-selectforeground", c["select_fg"])
+            self.root.tk.call("%s.f" % popdown, "configure",
+                              "-background", c["border"])
+        except tk.TclError:
+            pass
+
+
+def contrast_fg_for(color: str) -> str:
+    """Return black or white, whichever is readable on the given #RRGGBB."""
+    try:
+        h = color.lstrip("#")
+        if len(h) == 3:
+            h = "".join(ch * 2 for ch in h)
+        r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        return "#000000"
+    # Perceived luminance (ITU-R BT.601)
+    return "#000000" if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else "#FFFFFF"
 
 
 class SerialGUI:
@@ -159,7 +618,7 @@ class SerialGUI:
         
         # Plotting functionality
         self.plot_data = {}
-        self.plot_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
+        self.plot_colors = list(CURRENT_THEME["plot_palette"])  # refreshed on theme change
         self.plot_max_points = 1000
         self.plot_width = 500  # Number of samples to display in plot
         self.delimiter = ','
@@ -169,6 +628,8 @@ class SerialGUI:
         self.plot_paused = False  # Flag to pause/resume plotting
         self.channel_thickness = {}  # Store line thickness for each channel
         self.channel_colors = {}  # Store custom colors for each channel
+        self.channel_color_index = {}  # Palette slot per channel (keeps hue position across themes)
+        self.channel_color_user = {}  # True once the user picks a colour by hand
         self.channel_custom_names = {}  # Store custom names for each channel
         self.channel_dot_size = {}  # Store dot size for each channel
         self.channel_show_line = {}  # Store line visibility for each channel
@@ -179,6 +640,16 @@ class SerialGUI:
         
         # Settings
         self.settings = self.load_settings()
+
+        # Appearance / theme. Applied once here so that the ttk style database
+        # and the Tk option database (menus, combobox popdowns) are already
+        # correct while setup_gui() builds the widgets.
+        self.theme_name = self.settings.get('theme', DEFAULT_THEME)
+        if self.theme_name not in THEMES:
+            self.theme_name = DEFAULT_THEME
+        self.theme_var = tk.StringVar(value=self.theme_name)
+        self.themes = ThemeManager(root, self.theme_name)
+        self.themes.apply()
         
         # Sample tracking for status bar
         self.samples_received = 0
@@ -202,6 +673,12 @@ class SerialGUI:
         
         # Setup GUI
         self.setup_gui()
+
+        # Second pass: now that the widget tree exists, walk it for the classic
+        # tk widgets and run the app-specific fixups.
+        self.themes.add_listener(self._on_theme_applied)
+        self.themes.apply()
+
         self.update_port_list()
         
         # Initialize status indicator
@@ -258,6 +735,19 @@ class SerialGUI:
         # Options menu
         options_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Options", menu=options_menu)
+
+        # Appearance submenu - the fast path for switching themes
+        appearance_menu = tk.Menu(options_menu, tearoff=0)
+        options_menu.add_cascade(label="Appearance", menu=appearance_menu)
+        for theme_key in THEME_ORDER:
+            appearance_menu.add_radiobutton(
+                label=THEMES[theme_key]["display_name"],
+                value=theme_key,
+                variable=self.theme_var,
+                command=self.on_theme_selected
+            )
+
+        options_menu.add_separator()
         options_menu.add_command(label="Preferences", command=self.show_preferences)
         options_menu.add_separator()
         options_menu.add_command(label="Reset Settings", command=self.reset_settings)
@@ -319,13 +809,17 @@ class SerialGUI:
         self.status_canvas.pack(side=tk.LEFT, padx=(0, 8), pady=2)
         
         # Draw initial red circle (disconnected)
-        self.status_circle = self.status_canvas.create_oval(2, 2, 14, 14, fill="red", outline="darkred")
+        self.status_circle = self.status_canvas.create_oval(
+            2, 2, 14, 14,
+            fill=CURRENT_THEME["error"], outline=CURRENT_THEME["error_dim"])
         
         # Status text
         self.status_var = tk.StringVar()
         self.status_var.set("Disconnected")
-        self.status_label = ttk.Label(status_frame, textvariable=self.status_var, font=("Arial", 10, "bold"))
-        self.status_label.pack(side=tk.LEFT)
+        # NOTE: named conn_status_label so it is not shadowed by the bottom
+        # status bar's self.status_label, which is created later.
+        self.conn_status_label = ttk.Label(status_frame, textvariable=self.status_var, font=("Arial", 10, "bold"))
+        self.conn_status_label.pack(side=tk.LEFT)
         
         # Logging controls on the right
         logging_outer_frame = ttk.Frame(top_frame)
@@ -344,15 +838,160 @@ class SerialGUI:
         
         self.log_status_var = tk.StringVar()
         self.log_status_var.set("Not logging")
-        self.log_status_label = ttk.Label(log_status_frame, textvariable=self.log_status_var, foreground="red", font=("Arial", 10, "bold"))
+        self.log_status_label = ttk.Label(log_status_frame, textvariable=self.log_status_var, font=("Arial", 10, "bold"))
         self.log_status_label.pack()
+        self._refresh_log_status_color()
     
     def update_status_indicator(self, connected: bool):
         """Update the connection status indicator color"""
-        if connected:
-            self.status_canvas.itemconfig(self.status_circle, fill="green", outline="darkgreen")
-        else:
-            self.status_canvas.itemconfig(self.status_circle, fill="red", outline="darkred")
+        c = CURRENT_THEME
+        fill, outline = (c["ok"], c["ok_dim"]) if connected else (c["error"], c["error_dim"])
+        try:
+            self.status_canvas.itemconfig(self.status_circle, fill=fill, outline=outline)
+        except tk.TclError:
+            pass
+
+    def _refresh_log_status_color(self):
+        """Colour the logging status label for the active theme and state"""
+        c = CURRENT_THEME
+        try:
+            self.log_status_label.config(
+                foreground=c["ok"] if self.logging_active else c["error"])
+        except tk.TclError:
+            pass
+
+    # ------------------------------------------------------------------
+    # Theming
+    # ------------------------------------------------------------------
+    def _configure_text_tags(self, c: Dict[str, Any]):
+        """Colour the serial monitor message tags.
+
+        tag_config is retroactive - Tk stores tag ranges by name - so the
+        history already in the widget recolours in place, with no re-insert
+        and no loss of scroll position.
+        """
+        try:
+            self.received_text.tag_config("RECEIVED", foreground=c["log_received"])
+            self.received_text.tag_config("SENT", foreground=c["log_sent"])
+            self.received_text.tag_config("SYSTEM", foreground=c["log_system"],
+                                          font=("Arial", 9, "bold"))
+            self.received_text.tag_config("ERROR", foreground=c["log_error"],
+                                          font=("Arial", 9, "bold"))
+        except tk.TclError:
+            pass
+
+    def on_theme_selected(self, *_args):
+        """Apply and persist the theme chosen from the menu or Preferences"""
+        name = self.theme_var.get()
+        if name not in THEMES:
+            return
+        self.theme_name = name
+        self.themes.apply(name)
+        self._write_settings({'theme': name})
+
+    def _on_theme_applied(self, c: Dict[str, Any]):
+        """Fixups the generic widget walk cannot cover. Order matters."""
+        self.plot_colors = list(c["plot_palette"])
+        self._configure_text_tags(c)
+        self._remap_auto_channel_colors(c)
+        for channel_name in list(self.channel_colors):
+            self.update_color_button_appearance(channel_name)
+        self.update_status_indicator(self.is_connected)
+        self._refresh_log_status_color()
+        self._apply_pyqtgraph_theme(c)
+
+    def _remap_auto_channel_colors(self, c: Dict[str, Any]):
+        """Re-map default channel colours, leaving user picks untouched.
+
+        The stored palette slot (not the current channel count) is used, so a
+        channel keeps its hue position when the theme changes.
+        """
+        palette = c["plot_palette"]
+        for channel_name in list(self.channel_colors):
+            if self.channel_color_user.get(channel_name, False):
+                continue
+            idx = self.channel_color_index.get(channel_name, 0) % len(palette)
+            self.channel_colors[channel_name] = palette[idx]
+
+    def _repen_all_curves(self):
+        """Push the current channel colours onto live pyqtgraph curves"""
+        if not PYQTGRAPH_AVAILABLE:
+            return
+        for channel_name, curve in self.plot_curves.items():
+            try:
+                color = self.channel_colors[channel_name]
+                if self.channel_show_line.get(channel_name, True):
+                    curve.setPen(pg.mkPen(
+                        color=color,
+                        width=self.channel_thickness.get(channel_name, 2)))
+                if self.channel_dot_size.get(channel_name, 4) > 0:
+                    curve.setSymbolBrush(color)
+            except Exception:
+                pass
+
+    def _apply_pyqtgraph_theme(self, c: Dict[str, Any]):
+        """Theme the pop-out plot window.
+
+        setConfigOption only affects items created afterwards, so an already
+        open window needs its axes, grid and legend updated explicitly.
+        """
+        if not PYQTGRAPH_AVAILABLE:
+            return
+
+        try:
+            pg.setConfigOption('background', c["plot_bg"])
+            pg.setConfigOption('foreground', c["plot_fg"])
+        except Exception:
+            pass
+
+        # Closed or never opened: the config options above are enough, and
+        # show_plot_window() re-applies the theme when it builds the window.
+        if getattr(self, 'plot_widget', None) is None:
+            return
+
+        try:
+            self.plot_widget.setBackground(c["plot_bg"])
+
+            for axis_name in ('left', 'bottom', 'right', 'top'):
+                try:
+                    axis = self.plot_widget.getAxis(axis_name)
+                    axis.setPen(pg.mkPen(color=c["plot_axis"]))
+                    axis.setTextPen(pg.mkPen(color=c["plot_fg"]))
+                except Exception:
+                    pass
+
+            # The grid is drawn with the axis pen, so it follows the above.
+            self.plot_widget.showGrid(x=True, y=True, alpha=c["plot_grid_alpha"])
+
+            if getattr(self, 'plot_legend', None) is not None:
+                try:
+                    self.plot_legend.setLabelTextColor(c["plot_fg"])
+                    self.plot_legend.setBrush(pg.mkBrush(c["plot_legend_bg"]))
+                    self.plot_legend.setPen(pg.mkPen(c["plot_legend_border"]))
+                    # setLabelTextColor only stores the option; the label HTML
+                    # is rebuilt by setText, so re-issue it for existing items.
+                    for _sample, label in self.plot_legend.items:
+                        try:
+                            label.setText(label.text)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            if getattr(self, 'plot_window', None) is not None:
+                try:
+                    self.plot_window.setStyleSheet(
+                        "QMainWindow { background-color: %s; }" % c["plot_bg"])
+                except Exception:
+                    pass
+
+            # Re-issue the labels so they pick up the new text colour
+            self.update_plot_title()
+            self.update_x_axis_label()
+            self.update_y_axis_label()
+            self._repen_all_curves()
+        except Exception:
+            pass
     
     def create_connection_content(self):
         """Create all content for the Connection tab"""
@@ -408,14 +1047,18 @@ class SerialGUI:
         recv_frame = ttk.Frame(data_frame)
         recv_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        self.received_text = scrolledtext.ScrolledText(recv_frame, height=15, state=tk.DISABLED)
-        self.received_text.pack(fill=tk.BOTH, expand=True)
-        
+        # tk.Text + ttk.Scrollbar rather than scrolledtext.ScrolledText: the
+        # latter embeds a classic tk.Scrollbar, which renders badly on a dark
+        # background. The widget itself is still a tk.Text, so log_message(),
+        # clear_display() and save_log() are unaffected.
+        self.received_text = tk.Text(recv_frame, height=15, state=tk.DISABLED, wrap=tk.CHAR)
+        recv_scroll = ttk.Scrollbar(recv_frame, orient=tk.VERTICAL, command=self.received_text.yview)
+        self.received_text.configure(yscrollcommand=recv_scroll.set)
+        self.received_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        recv_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
         # Configure text tags for different message types
-        self.received_text.tag_config("RECEIVED", foreground="blue")
-        self.received_text.tag_config("SENT", foreground="red")
-        self.received_text.tag_config("SYSTEM", foreground="black", font=("Arial", 9, "bold"))
-        self.received_text.tag_config("ERROR", foreground="red", font=("Arial", 9, "bold"))
+        self._configure_text_tags(CURRENT_THEME)
         
         # Send data section
         send_frame = ttk.Frame(data_frame)
@@ -865,7 +1508,7 @@ class SerialGUI:
                 
                 # Update UI
                 self.logging_btn.config(text="Stop Logging")
-                self.log_status_label.config(foreground="green")
+                self._refresh_log_status_color()
                 
                 # Write header to log file
                 header = f"# Serial Communication Log Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -900,7 +1543,7 @@ class SerialGUI:
                 # Update UI
                 self.logging_btn.config(text="Start Logging")
                 self.log_status_var.set("Not logging")
-                self.log_status_label.config(foreground="darkred")
+                self._refresh_log_status_color()
     
     def update_file_size_display(self):
         """Update the file size display for active logging"""
@@ -926,38 +1569,60 @@ class SerialGUI:
     
     def load_settings(self) -> Dict[str, Any]:
         """Load settings from file"""
-        settings_file = "serial_gui_settings.json"
         default_settings = {
             'port': '',
             'baud_rate': 9600,
             'data_bits': 8,
             'parity': 'None',
-            'stop_bits': 1
+            'stop_bits': 1,
+            'theme': DEFAULT_THEME
         }
-        
+
         try:
-            if os.path.exists(settings_file):
-                with open(settings_file, 'r') as f:
+            if os.path.exists(SETTINGS_FILE):
+                with open(SETTINGS_FILE, 'r') as f:
                     return {**default_settings, **json.load(f)}
         except Exception:
             pass
-        
+
         return default_settings
-    
-    def save_current_settings(self):
-        """Save current settings to file"""
-        settings = {
-            'port': self.port_var.get(),
-            'baud_rate': int(self.baud_var.get()),
-            'data_bits': int(self.databits_var.get()),
-            'parity': self.parity_var.get(),
-            'stop_bits': float(self.stopbits_var.get())
-        }
-        
+
+    def _write_settings(self, updates: Dict[str, Any]):
+        """Merge updates into the settings file.
+
+        Read-merge-write rather than overwrite, so that saving connection
+        settings cannot discard the theme (and vice versa).
+        """
+        data = {}
         try:
-            with open("serial_gui_settings.json", 'w') as f:
-                json.dump(settings, f, indent=2)
+            if os.path.exists(SETTINGS_FILE):
+                with open(SETTINGS_FILE, 'r') as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
         except Exception:
+            data = {}
+
+        data.update(updates)
+        self.settings.update(updates)
+
+        try:
+            with open(SETTINGS_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def save_current_settings(self):
+        """Save current connection settings to file"""
+        try:
+            self._write_settings({
+                'port': self.port_var.get(),
+                'baud_rate': int(self.baud_var.get()),
+                'data_bits': int(self.databits_var.get()),
+                'parity': self.parity_var.get(),
+                'stop_bits': float(self.stopbits_var.get())
+            })
+        except ValueError:
             pass
     
     def on_closing(self):
@@ -969,20 +1634,64 @@ class SerialGUI:
         self.root.destroy()
     
     def show_preferences(self):
-        """Show preferences dialog (placeholder)"""
-        messagebox.showinfo("Preferences", "Preferences dialog will be implemented in a future version.")
-    
+        """Show the preferences dialog"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Preferences")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry("+{}+{}".format(self.root.winfo_rootx() + 60,
+                                        self.root.winfo_rooty() + 60))
+
+        main_frame = ttk.Frame(dialog, padding="12")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        theme_frame = ttk.LabelFrame(main_frame, text="Appearance", padding="10")
+        theme_frame.grid(row=0, column=0, sticky=tk.EW)
+
+        # Bound to the same variable and command as the Options > Appearance
+        # menu, so the two stay in sync and each click is a live preview.
+        for row, theme_key in enumerate(THEME_ORDER):
+            ttk.Radiobutton(
+                theme_frame,
+                text=THEMES[theme_key]["display_name"],
+                value=theme_key,
+                variable=self.theme_var,
+                command=self.on_theme_selected
+            ).grid(row=row, column=0, sticky=tk.W, pady=2)
+
+        ttk.Label(main_frame,
+                  text="High Contrast is intended for outdoor use in direct sunlight.",
+                  foreground=CURRENT_THEME["fg_muted"]).grid(row=1, column=0,
+                                                             sticky=tk.W, pady=(8, 0))
+
+        ttk.Button(main_frame, text="Close", command=dialog.destroy).grid(
+            row=2, column=0, pady=(12, 0))
+
+        self.themes.restyle(dialog)
+
     def reset_settings(self):
         """Reset all settings to defaults"""
-        result = messagebox.askyesno("Reset Settings", 
+        result = messagebox.askyesno("Reset Settings",
                                    "Are you sure you want to reset all settings to defaults?\n"
                                    "This will require restarting the application.")
         if result:
             try:
-                if os.path.exists("serial_gui_settings.json"):
-                    os.remove("serial_gui_settings.json")
-                messagebox.showinfo("Settings Reset", 
-                                  "Settings have been reset. Please restart the application.")
+                if os.path.exists(SETTINGS_FILE):
+                    os.remove(SETTINGS_FILE)
+
+                # Revert the appearance right away - no restart needed for it.
+                # Deliberately not written back to disk here; that would
+                # immediately recreate the file we just deleted.
+                self.theme_var.set(DEFAULT_THEME)
+                self.theme_name = DEFAULT_THEME
+                self.themes.apply(DEFAULT_THEME)
+
+                messagebox.showinfo(
+                    "Settings Reset",
+                    "Settings have been reset and the appearance is back to "
+                    f"{THEMES[DEFAULT_THEME]['display_name']}.\n"
+                    "Please restart the application to reset connection settings.")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to reset settings: {str(e)}")
     
@@ -1008,8 +1717,9 @@ Features:
 • Automatic first-line filtering for reliable plots
 
 Built with Python, tkinter, and PyQtGraph for professional data visualization."""
-        
-        messagebox.showinfo("About KestrelSAT Ground Control Station", about_text)
+
+        self._show_text_dialog("About KestrelSAT Ground Control Station", about_text,
+                               width=72, height=24)
     
     def show_user_guide(self):
         """Show user guide dialog"""
@@ -1053,8 +1763,40 @@ Built with Python, tkinter, and PyQtGraph for professional data visualization.""
    • Plot legend updates with custom channel names
    
 For technical support, refer to the README.md file."""
-        
-        messagebox.showinfo("User Guide", guide_text)
+
+        self._show_text_dialog("User Guide", guide_text, width=72, height=30)
+
+    def _show_text_dialog(self, title: str, body: str, width: int = 72, height: int = 24):
+        """Show a long block of text in a themed, scrollable, read-only window.
+
+        messagebox dialogs are native OS windows and cannot be themed, so the
+        two largest text panes in the app get their own Toplevel instead.
+        """
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.geometry("+{}+{}".format(self.root.winfo_rootx() + 50,
+                                        self.root.winfo_rooty() + 50))
+
+        main_frame = ttk.Frame(dialog, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        text_frame = ttk.Frame(main_frame)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        text = tk.Text(text_frame, width=width, height=height, wrap=tk.WORD)
+        scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        text.insert(tk.END, body)
+        text.config(state=tk.DISABLED)
+
+        ttk.Button(main_frame, text="Close", command=dialog.destroy).pack(pady=(10, 0))
+
+        self.themes.restyle(dialog)
+        dialog.grab_set()
     
     def show_serial_config(self):
         """Show serial configuration dialog"""
@@ -1099,6 +1841,8 @@ For technical support, refer to the README.md file."""
         
         ttk.Button(button_frame, text="OK", command=dialog.destroy).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
+
+        self.themes.restyle(dialog)
     
     def create_plot_content(self):
         """Create plot tab content"""
@@ -1329,7 +2073,7 @@ For technical support, refer to the README.md file."""
                             else:
                                 label = channel_name
                     
-                    self.plot_widget.setLabel('bottom', label)
+                    self.plot_widget.setLabel('bottom', label, color=CURRENT_THEME["plot_fg"])
             except:
                 pass
     
@@ -1349,7 +2093,7 @@ For technical support, refer to the README.md file."""
                     else:
                         label = "Value"  # Default Y-axis label
                     
-                    self.plot_widget.setLabel('left', label)
+                    self.plot_widget.setLabel('left', label, color=CURRENT_THEME["plot_fg"])
             except:
                 pass
     
@@ -1369,7 +2113,7 @@ For technical support, refer to the README.md file."""
                     else:
                         title = "Serial Data Plot"  # Default plot title
                     
-                    self.plot_widget.setTitle(title) # type: ignore
+                    self.plot_widget.setTitle(title, color=CURRENT_THEME["plot_fg"]) # type: ignore
             except:
                 pass
     
@@ -1419,9 +2163,13 @@ For technical support, refer to the README.md file."""
                 self.channel_visibility[channel_name] = True
                 
                 # Set default thickness and color
-                self.channel_thickness[channel_name] = 2
+                self.channel_thickness[channel_name] = CURRENT_THEME["default_line_width"]
                 color_index = len(self.channel_colors) % len(self.plot_colors)
                 self.channel_colors[channel_name] = self.plot_colors[color_index]
+                # Remember the palette slot so this channel keeps its hue
+                # position when the theme changes.
+                self.channel_color_index[channel_name] = color_index
+                self.channel_color_user[channel_name] = False
                 
                 # Set default dot size and line visibility
                 self.channel_dot_size[channel_name] = 4
@@ -1530,7 +2278,9 @@ For technical support, refer to the README.md file."""
             command=lambda: self.choose_channel_color(channel_name)
         )
         color_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
+        # The swatch carries the channel colour - the theme walk must skip it
+        self.themes.exempt(color_btn)
+
         # Dot size control
         ttk.Label(channel_control_frame, text="Dot Size:").pack(side=tk.LEFT, padx=(0, 2))
         dot_size_var = tk.StringVar(value=str(self.channel_dot_size[channel_name]))
@@ -1565,7 +2315,8 @@ For technical support, refer to the README.md file."""
         # Initialize custom name
         self.channel_custom_names[channel_name] = channel_name
         
-        # Update button color to show current selection
+        # Theme the row that was just built, then colour the swatch
+        self.themes.restyle(self.channel_frame)
         self.update_color_button_appearance(channel_name)
     
     def toggle_channel_visibility(self, channel_name: str, visible: bool):
@@ -1743,7 +2494,9 @@ For technical support, refer to the README.md file."""
         
         if color[1]:  # color[1] is the hex color string
             self.channel_colors[channel_name] = color[1]
-            
+            # Hand-picked colours survive theme switches untouched
+            self.channel_color_user[channel_name] = True
+
             # Update button appearance
             self.update_color_button_appearance(channel_name)
             
@@ -1763,9 +2516,15 @@ For technical support, refer to the README.md file."""
         color_btn = getattr(self, f"color_btn_{channel_name}", None)
         if color_btn:
             try:
-                # Set button background to match the line color
+                # Set button background to match the line color, and pick a
+                # label colour that stays readable on top of it.
                 color = self.channel_colors[channel_name]
-                color_btn.config(text="Color", background=color)
+                color_btn.config(text="Color", background=color,
+                                 foreground=contrast_fg_for(color),
+                                 activebackground=color,
+                                 activeforeground=contrast_fg_for(color),
+                                 relief="flat", bd=1,
+                                 highlightbackground=CURRENT_THEME["border"])
             except:
                 pass
     
@@ -1918,19 +2677,26 @@ For technical support, refer to the README.md file."""
                 self.update_x_axis_label()
                 
                 self.plot_widget.showGrid(True, True)
-                self.plot_widget.setBackground('white')
-                
+
                 # Add legend using LegendItem
                 if PYQTGRAPH_AVAILABLE:
                     try:
-                        self.plot_legend = pg.LegendItem(offset=(-70, 30))  # Negative offset for top-right
+                        self.plot_legend = pg.LegendItem(
+                            offset=(-70, 30),  # Negative offset for top-right
+                            brush=pg.mkBrush(CURRENT_THEME["plot_legend_bg"]),
+                            pen=pg.mkPen(CURRENT_THEME["plot_legend_border"]),
+                            labelTextColor=CURRENT_THEME["plot_fg"]
+                        )
                         self.plot_legend.setParentItem(self.plot_widget.getPlotItem())
                     except:
                         # Fallback if legend creation fails
                         self.plot_legend = None
                 else:
                     self.plot_legend = None
-                
+
+                # Colour the freshly built window for the active theme
+                self._apply_pyqtgraph_theme(CURRENT_THEME)
+
                 self.plot_window.setCentralWidget(self.plot_widget)
                 
                 # Recreate all plot curves
@@ -1993,7 +2759,9 @@ For technical support, refer to the README.md file."""
         self.channel_custom_names.clear()
         self.channel_dot_size.clear()
         self.channel_show_line.clear()
-        
+        self.channel_color_index.clear()
+        self.channel_color_user.clear()
+
         # Reset global sample counter
         self.global_sample_counter = 0
         
@@ -2013,9 +2781,14 @@ For technical support, refer to the README.md file."""
             self.ylabel_entry.pack(side=tk.LEFT, padx=(0, 5))
             self.ylabel_entry.bind('<Return>', self.on_y_label_changed)
             self.ylabel_entry.bind('<FocusOut>', self.on_y_label_changed)
-        
+
         ttk.Label(self.channel_frame, text="No channels detected").pack()
-        
+
+        # The Y-axis label frame above is a classic tk.Frame (clear_plot_data
+        # identifies it with isinstance(widget, tk.Frame)), so it needs the
+        # theme re-applied after being rebuilt.
+        self.themes.restyle(self.channel_frame)
+
         # Clear plot if window exists but preserve settings
         if self.plot_widget is not None:
             # Remove existing legend first
