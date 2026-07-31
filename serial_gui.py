@@ -597,7 +597,7 @@ class SerialGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("USAFA ASTRO - KestrelSAT Ground Control Station")
-        self.root.geometry("800x700")
+        self.root.geometry("800x780")
         self.root.resizable(True, True)
         
         # Serial connection
@@ -700,27 +700,34 @@ class SerialGUI:
         
         # Create top frame for logging controls
         self.create_top_frame()
-        
+
+        # Create status bar before the notebook. Tk's packer allocates
+        # cavity space in the order widgets are packed, not by "side" alone:
+        # the notebook below is packed with fill=BOTH, expand=True, which
+        # claims the entire remaining cavity at the moment it is packed. If
+        # the status bar were packed afterwards, it would find no cavity
+        # left and be squeezed to nothing regardless of its side="bottom".
+        # Reserving its slice first makes the notebook fill exactly what's
+        # left, so the status bar always stays visible.
+        self.create_status_bar()
+
         # Create notebook for tabs
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
+
         # Create Connection tab
         self.connection_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.connection_frame, text="Connection")
-        
+
         # Create Plot tab (empty for now)
         self.plot_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.plot_frame, text="Plot")
-        
+
         # Setup Connection tab content
         self.create_connection_content()
-        
+
         # Setup Plot tab content
         self.create_plot_content()
-        
-        # Create status bar
-        self.create_status_bar()
     
     def create_menu_bar(self):
         """Create the menu bar"""
