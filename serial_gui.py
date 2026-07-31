@@ -1931,27 +1931,13 @@ For technical support, refer to the README.md file."""
         xlabel_entry.bind('<FocusOut>', self.on_x_label_changed)
         ToolTip(xlabel_entry, "Optional custom label for X-axis (leave empty for automatic)")
         
-        # Channel visibility frame
-        self.channel_frame = ttk.LabelFrame(self.plot_frame, text="Set Y-Axis", padding="10")
-        self.channel_frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        # Y-axis custom label at the top of the frame
-        ylabel_frame = tk.Frame(self.channel_frame)
-        ylabel_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        ttk.Label(ylabel_frame, text="Custom Y-Axis Label:").pack(side=tk.LEFT, padx=(0, 5))
-        self.ylabel_var = tk.StringVar(value=self.y_axis_custom_label)
-        self.ylabel_entry = ttk.Entry(ylabel_frame, textvariable=self.ylabel_var, width=25)
-        self.ylabel_entry.pack(side=tk.LEFT, padx=(0, 5))
-        self.ylabel_entry.bind('<Return>', self.on_y_label_changed)
-        self.ylabel_entry.bind('<FocusOut>', self.on_y_label_changed)
-        
-        ttk.Label(self.channel_frame, text="No channels detected").pack()
-        
-        # PyQtGraph widget frame
+        # PyQtGraph widget frame - placed above the channel list so the plot
+        # controls stay reachable no matter how many channels get detected
+        # (the channel list below is scrollable and bounded in height for
+        # the same reason).
         plot_container = ttk.Frame(self.plot_frame)
-        plot_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
+        plot_container.pack(fill=tk.X, padx=10, pady=5)
+
         # Create QApplication if it doesn't exist
         try:
             self.qt_app = QtWidgets.QApplication.instance()
@@ -1959,28 +1945,116 @@ For technical support, refer to the README.md file."""
                 self.qt_app = QtWidgets.QApplication([])
         except Exception as e:
             self.qt_app = None
-            
+
         # Create PyQtGraph widget in a separate window
         self.plot_window = None
         self.plot_widget = None
-        
+
         # Control buttons for plot
         plot_control_frame = ttk.Frame(plot_container)
-        plot_control_frame.pack(pady=10)
-        
+        plot_control_frame.pack(pady=8)
+
         self.show_plot_btn = ttk.Button(plot_control_frame, text="Show Plot Window", command=self.show_plot_window)
         self.show_plot_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
+
         self.pause_plot_btn = ttk.Button(plot_control_frame, text="Pause Plot", command=self.toggle_plot_pause)
         self.pause_plot_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
+
         self.clear_plot_btn = ttk.Button(plot_control_frame, text="Clear Plot Data", command=self.clear_plot_data)
         self.clear_plot_btn.pack(side=tk.LEFT)
-        
+
         # Status label
         self.plot_status_label = ttk.Label(plot_container, text="Click 'Show Plot Window' to display real-time plots")
-        self.plot_status_label.pack(pady=20)
-    
+        self.plot_status_label.pack(pady=8)
+
+        # Channel visibility frame
+        self.channel_frame = ttk.LabelFrame(self.plot_frame, text="Set Y-Axis", padding="10")
+        self.channel_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # Y-axis custom label at the top of the frame - fixed, not part of
+        # the scrollable channel list below
+        ylabel_frame = tk.Frame(self.channel_frame)
+        ylabel_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(ylabel_frame, text="Custom Y-Axis Label:").pack(side=tk.LEFT, padx=(0, 5))
+        self.ylabel_var = tk.StringVar(value=self.y_axis_custom_label)
+        self.ylabel_entry = ttk.Entry(ylabel_frame, textvariable=self.ylabel_var, width=25)
+        self.ylabel_entry.pack(side=tk.LEFT, padx=(0, 5))
+        self.ylabel_entry.bind('<Return>', self.on_y_label_changed)
+        self.ylabel_entry.bind('<FocusOut>', self.on_y_label_changed)
+
+        # Scrollable list of per-channel controls. Packed directly, this list
+        # grows one row per detected channel with no upper bound, and can
+        # push everything below it - including, previously, the plot
+        # controls above - past the bottom of the window with no way to
+        # scroll back up to it. A fixed-height canvas keeps this section's
+        # height bounded regardless of how many channels are detected.
+        self._build_channel_scroll_area()
+
+        ttk.Label(self.channel_rows_frame, text="No channels detected").pack()
+
+    # Channel rows grow the canvas up to this height; beyond it they scroll
+    # instead of pushing the rest of the tab off screen.
+    CHANNEL_LIST_MAX_HEIGHT = 200
+
+    def _build_channel_scroll_area(self):
+        """Build the scrollable container that holds per-channel plot rows"""
+        scroll_container = ttk.Frame(self.channel_frame)
+        scroll_container.pack(fill=tk.BOTH, expand=True)
+
+        self.channel_canvas = tk.Canvas(scroll_container, height=1, highlightthickness=0)
+        channel_scrollbar = ttk.Scrollbar(scroll_container, orient=tk.VERTICAL,
+                                          command=self.channel_canvas.yview)
+        self.channel_canvas.configure(yscrollcommand=channel_scrollbar.set)
+
+        self.channel_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        channel_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Rows are packed into this frame, not directly into the canvas
+        self.channel_rows_frame = ttk.Frame(self.channel_canvas)
+        self._channel_canvas_window = self.channel_canvas.create_window(
+            (0, 0), window=self.channel_rows_frame, anchor="nw")
+
+        self.channel_rows_frame.bind("<Configure>", self._on_channel_rows_configure)
+        self.channel_canvas.bind(
+            "<Configure>",
+            lambda e: self.channel_canvas.itemconfig(self._channel_canvas_window, width=e.width))
+
+        # Only scroll the channel list with the mouse wheel while the
+        # pointer is actually over it, so it doesn't hijack scrolling
+        # elsewhere on the Plot tab.
+        self.channel_canvas.bind("<Enter>", lambda e: self._bind_channel_scroll())
+        self.channel_canvas.bind("<Leave>", lambda e: self._unbind_channel_scroll())
+
+    def _on_channel_rows_configure(self, event=None):
+        """Keep the scroll region in sync and size the canvas to fit the
+        current channel list, up to CHANNEL_LIST_MAX_HEIGHT. A handful of
+        channels shows in full with no scrollbar needed; a long list scrolls
+        instead of growing without bound.
+        """
+        self.channel_canvas.configure(scrollregion=self.channel_canvas.bbox("all"))
+        needed = self.channel_rows_frame.winfo_reqheight()
+        self.channel_canvas.configure(height=min(needed, self.CHANNEL_LIST_MAX_HEIGHT))
+
+    def _bind_channel_scroll(self):
+        self.channel_canvas.bind_all("<MouseWheel>", self._on_channel_mousewheel)
+        self.channel_canvas.bind_all("<Button-4>", self._on_channel_mousewheel)
+        self.channel_canvas.bind_all("<Button-5>", self._on_channel_mousewheel)
+
+    def _unbind_channel_scroll(self):
+        self.channel_canvas.unbind_all("<MouseWheel>")
+        self.channel_canvas.unbind_all("<Button-4>")
+        self.channel_canvas.unbind_all("<Button-5>")
+
+    def _on_channel_mousewheel(self, event):
+        if event.num == 4:
+            delta = -1
+        elif event.num == 5:
+            delta = 1
+        else:
+            delta = -1 if event.delta > 0 else 1
+        self.channel_canvas.yview_scroll(delta, "units")
+
     def update_delimiter(self):
         """Update the delimiter based on selection"""
         delim_type = self.delimiter_var.get()
@@ -2226,17 +2300,17 @@ For technical support, refer to the README.md file."""
         """Add visibility control for a channel with thickness and color options"""
         # Clear only the "No channels detected" message if it's the first channel
         if len(self.plot_data) == 1:
-            # Only destroy the "No channels detected" label, preserve Y-axis label frame
+            # Only destroy the "No channels detected" label
             widgets_to_remove = []
-            for widget in self.channel_frame.winfo_children():
+            for widget in self.channel_rows_frame.winfo_children():
                 if isinstance(widget, ttk.Label) and widget.cget("text") == "No channels detected":
                     widgets_to_remove.append(widget)
-            
+
             for widget in widgets_to_remove:
                 widget.destroy()
-        
+
         # Create frame for this channel's controls
-        channel_control_frame = ttk.Frame(self.channel_frame, relief="solid", borderwidth=1, padding=3)
+        channel_control_frame = ttk.Frame(self.channel_rows_frame, relief="solid", borderwidth=1, padding=3)
         channel_control_frame.pack(fill=tk.X, padx=2, pady=2)
         
         # Channel visibility checkbox
@@ -2765,28 +2839,17 @@ For technical support, refer to the README.md file."""
         # Reset global sample counter
         self.global_sample_counter = 0
         
-        # Clear channel controls but preserve the Y-axis label frame
-        for widget in self.channel_frame.winfo_children():
-            if not isinstance(widget, tk.Frame) or not any(isinstance(child, ttk.Entry) for child in widget.winfo_children()):
-                widget.destroy()
-        
-        # Re-add Y-axis custom label frame if it was destroyed
-        if not any(isinstance(widget, tk.Frame) and any(isinstance(child, ttk.Entry) for child in widget.winfo_children()) for widget in self.channel_frame.winfo_children()):
-            ylabel_frame = tk.Frame(self.channel_frame)
-            ylabel_frame.pack(fill=tk.X, pady=(0, 10))
-            
-            ttk.Label(ylabel_frame, text="Custom Y-Axis Label:").pack(side=tk.LEFT, padx=(0, 5))
-            self.ylabel_var = tk.StringVar(value=self.y_axis_custom_label)
-            self.ylabel_entry = ttk.Entry(ylabel_frame, textvariable=self.ylabel_var, width=25)
-            self.ylabel_entry.pack(side=tk.LEFT, padx=(0, 5))
-            self.ylabel_entry.bind('<Return>', self.on_y_label_changed)
-            self.ylabel_entry.bind('<FocusOut>', self.on_y_label_changed)
+        # Clear the channel rows. The Y-axis label frame lives outside the
+        # scrollable channel_rows_frame (it's a sibling, not a child), so it
+        # is untouched by this and needs no special-casing to preserve.
+        for widget in self.channel_rows_frame.winfo_children():
+            widget.destroy()
 
-        ttk.Label(self.channel_frame, text="No channels detected").pack()
+        ttk.Label(self.channel_rows_frame, text="No channels detected").pack()
 
-        # The Y-axis label frame above is a classic tk.Frame (clear_plot_data
-        # identifies it with isinstance(widget, tk.Frame)), so it needs the
-        # theme re-applied after being rebuilt.
+        # Reset the scroll position now that the list is empty
+        self.channel_canvas.yview_moveto(0)
+
         self.themes.restyle(self.channel_frame)
 
         # Clear plot if window exists but preserve settings
