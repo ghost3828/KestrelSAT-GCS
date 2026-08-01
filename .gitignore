@@ -29,3 +29,6 @@ Thumbs.db
 
 # Test scratch
 tests/logs/
+
+# Built executables
+*.exe

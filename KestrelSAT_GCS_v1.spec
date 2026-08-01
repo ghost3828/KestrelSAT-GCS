@@ -2,21 +2,23 @@
 
 from PyInstaller.utils.hooks import collect_data_files
 
-# serial_gui.py is the entry point; PyInstaller follows its imports, so this
-# spec does not need updating when the source is split across modules.
+# serial_gui.py stays the entry point, so PyInstaller follows its imports into
+# the kestrelsat package and this spec needs no change when modules move.
 a = Analysis(
     ['serial_gui.py'],
     pathex=[],
     binaries=[],
-    datas=collect_data_files('pyqtgraph'),
-    # These were previously passed as --hidden-import flags by build_exe.bat.
-    # They live here now so the batch file and a bare
-    # "pyinstaller KestrelSAT_GCS_v1.spec" produce the same executable.
+    datas=[
+        ('KestrelSAT_logo.png', '.'),
+        ('splash_screen.png', '.'),
+    ] + collect_data_files('pyqtgraph'),
     hiddenimports=[
+        'serial.tools.list_ports',
         'PyQt5.QtCore',
+        'PyQt5.QtGui',
         'PyQt5.QtWidgets',
         'pyqtgraph',
-        'serial.tools.list_ports',
+        'pyqtgraph.graphicsItems',
     ],
     hookspath=[],
     hooksconfig={},
@@ -25,6 +27,16 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+splash = Splash(
+    'splash_screen.png',
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=None,       # no loading text overlay
+    text_size=12,
+    minify_script=True,
+)
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -32,8 +44,10 @@ exe = EXE(
     a.scripts,
     a.binaries,
     a.datas,
+    splash,
+    splash.binaries,
     [],
-    name='KestrelSAT_GCS_v1',
+    name='KestrelSAT_GCS',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -46,4 +60,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='KestrelSAT_logo.ico',
 )

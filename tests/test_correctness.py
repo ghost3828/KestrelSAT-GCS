@@ -48,7 +48,7 @@ app.connect()
 # released by the actual event loop. (That coupling is finding T1.1.)
 root.after(2500, root.quit)
 root.mainloop()
-check(sorted(app.channels) == ["Noise", "Sine", "Temp"],
+check(sorted(app.channels) == ["SENSOR_A", "SENSOR_B", "TIME"],
       "TEST MODE created channels: %s" % sorted(app.channels))
 check(len(app.serial_buffer) < 200,
       "serial_buffer is drained, not accumulating (len=%d)" % len(app.serial_buffer))

@@ -24,6 +24,7 @@ except ImportError as e:
     pg = None
     QtWidgets = None
 
+import sys
 import threading
 import queue
 import time
@@ -31,7 +32,9 @@ import itertools
 import datetime
 import json
 import os
+import math
 import random
+import re
 from collections import deque
 from typing import Optional, Dict, Any
 
@@ -46,9 +49,6 @@ from .widgets import ToolTip
 
 class SerialGUI:
     # -- Tunables ---------------------------------------------------------
-    # Channel rows grow the scroll canvas up to this height; beyond it they
-    # scroll instead of pushing the rest of the Plot tab off screen.
-    CHANNEL_LIST_MAX_HEIGHT = 200
     # Discard the accumulated receive buffer if no line ending shows up within
     # this many bytes, so a misconfigured link cannot exhaust memory.
     MAX_SERIAL_BUFFER = 1 << 20  # 1 MiB
@@ -68,9 +68,23 @@ class SerialGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("USAFA ASTRO - KestrelSAT Ground Control Station")
+        self.root.title("USAFA ASTRO - KestrelSAT Ground Control Station v3.0.0")
         self.root.geometry("800x780")
         self.root.resizable(True, True)
+
+        # Set window and taskbar icon. Look next to the package, and next to
+        # the frozen executable when running from a PyInstaller build.
+        for _base in (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      getattr(sys, "_MEIPASS", None)):
+            if not _base:
+                continue
+            try:
+                _icon_img = tk.PhotoImage(file=os.path.join(_base, "KestrelSAT_logo.png"))
+                self.root.iconphoto(True, _icon_img)
+                self._icon_img = _icon_img  # keep a reference so GC does not collect it
+                break
+            except Exception:
+                continue
         
         # Shutdown state. Timer ids are kept so on_closing() can cancel them
         # before destroying the root.
@@ -265,9 +279,10 @@ class SerialGUI:
         self.status_bar = ttk.Frame(self.root, relief="sunken", borderwidth=1)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=2, pady=2)
         
-        # Left side - general status
-        self.status_label = ttk.Label(self.status_bar, text="Ready")
-        self.status_label.pack(side=tk.LEFT, padx=5, pady=2)
+        # Left side - plot status
+        self.plot_status_label = ttk.Label(
+            self.status_bar, text="Click 'Show Plot Window' to display real-time plots")
+        self.plot_status_label.pack(side=tk.LEFT, padx=5, pady=2)
         
         # Right side - samples per second
         self.sps_label = ttk.Label(self.status_bar, text="(0 SPS)")
@@ -316,7 +331,7 @@ class SerialGUI:
         self.status_var = tk.StringVar()
         self.status_var.set("Disconnected")
         # NOTE: named conn_status_label so it is not shadowed by the bottom
-        # status bar's self.status_label, which is created later.
+        # status bar's self.plot_status_label, which is created later.
         self.conn_status_label = ttk.Label(status_frame, textvariable=self.status_var, font=("Arial", 10, "bold"))
         self.conn_status_label.pack(side=tk.LEFT)
         
@@ -689,13 +704,19 @@ class SerialGUI:
     def update_port_list(self):
         """Update the list of available serial ports"""
         ports = [port.device for port in serial.tools.list_ports.comports()]
-        
-        # Add test mode option at the end if there are no real ports
+
+        # Sort so the highest COM number comes first - on Windows the board
+        # that was just plugged in is usually the highest-numbered port.
+        def _port_key(p):
+            m = re.search(r'(\d+)$', p)
+            return int(m.group(1)) if m else 0
+        ports = sorted(ports, key=_port_key, reverse=True)
+
         if ports:
-            # Real ports available - set default to first available port
             self.port_combo['values'] = ports + ["TEST MODE"]
-            if not self.port_var.get() or self.port_var.get() == "TEST MODE":
-                self.port_var.set(ports[0])
+            current = self.port_var.get()
+            if not current or current == "TEST MODE" or current not in ports:
+                self.port_var.set(ports[0])  # highest COM number
         else:
             # No real ports - offer only TEST MODE as default
             self.port_combo['values'] = ["TEST MODE"]
@@ -751,10 +772,6 @@ class SerialGUI:
                 self.status_var.set("Connected to TEST MODE - Simulated Device")
                 self.update_status_indicator(True)
                 
-                # Update status bar
-                if hasattr(self, 'status_label'):
-                    self.status_label.config(text="Connected to TEST MODE")
-                
                 # Reset global sample counter on new connection
                 self.global_sample_counter = 0
                 
@@ -797,10 +814,6 @@ class SerialGUI:
             self.send_btn.config(state=tk.NORMAL)
             self.status_var.set(f"Connected to {port} at {baud_rate} baud")
             self.update_status_indicator(True)
-            
-            # Update status bar
-            if hasattr(self, 'status_label'):
-                self.status_label.config(text=f"Connected to {port}")
             
             # Reset global sample counter on new connection
             self.global_sample_counter = 0
@@ -859,10 +872,6 @@ class SerialGUI:
         self.send_btn.config(state=tk.DISABLED)
         self.status_var.set("Disconnected")
         self.update_status_indicator(False)
-        
-        # Update status bar
-        if hasattr(self, 'status_label'):
-            self.status_label.config(text="Disconnected")
         
         self.log_message("Disconnected", "SYSTEM")
     
@@ -1036,50 +1045,34 @@ class SerialGUI:
             messagebox.showerror("Error", f"Unexpected error: {str(e)}")
     
     def test_mode_loop(self):
-        """Simulate device responses in test mode"""
+        """Simulate device responses in test mode.
+
+        Emits a fixed-rate stream of a noisy channel and a clean sine, which
+        is enough to exercise plotting, channel detection and the X-axis
+        controls without hardware.
+        """
         stop_event = self.stop_reading
+        interval = 0.2  # 5 SPS
+        sample = 0
+
         while not stop_event.is_set() and self.is_connected and self.test_mode:
             try:
-                # Send periodic sensor data every 3 seconds
-                if self.test_counter % 300 == 0:  # 300 * 0.01 = 3 seconds
-                    temp = random.uniform(20.0, 30.0)
-                    humidity = random.uniform(40.0, 80.0)
-                    voltage = random.uniform(3.0, 5.0)
-                    
-                    sensor_data = f"Sensor: T={temp:.1f}°C, H={humidity:.1f}%, V={voltage:.2f}V"
-                    self._post_rx(('log', (sensor_data, "RECEIVED")))
-                
-                # Send plot data every 100ms (10 times per second)
-                if self.test_counter % 10 == 0:
-                    # Generate sample plot data with named channels
-                    temp_val = 25 + 5 * random.random() * (1 if random.random() > 0.5 else -1)
-                    sine_val = 50 + 30 * (time.time() % 10) / 10  # Ramp from 50 to 80
-                    noise_val = random.uniform(0, 100)
-                    
-                    plot_data = f"Temp:{temp_val:.2f},Sine:{sine_val:.2f},Noise:{noise_val:.2f}"
-                    
-                    # Send as bytes to simulate real serial data
-                    data_bytes = (plot_data + '\n').encode('utf-8')
-                    self._post_rx(('data', data_bytes))
-                
-                # Send system status every 10 seconds
-                elif self.test_counter % 1000 == 500:  # Offset timing
-                    status_messages = [
-                        "System Status: OK",
-                        "Memory: 45% used",
-                        "Uptime: 2h 15m",
-                        "Signal: Strong"
-                    ]
-                    msg = random.choice(status_messages)
-                    self._post_rx(('log', (msg, "RECEIVED")))
-                
-                self.test_counter += 1
-                time.sleep(0.01)
-                
+                t = sample * interval
+                sensor_a = random.gauss(3.0, 1.0)
+                sensor_b = math.sin(2 * math.pi * 0.1 * t)  # 0.1 Hz sine, amplitude 1
+
+                line = f"TIME:{t:.2f},SENSOR_A:{sensor_a:.4f},SENSOR_B:{sensor_b:.4f}"
+                # Through the queue, not root.after: a cross-thread Tcl call
+                # blocks this worker until the GUI services it.
+                self._post_rx(('data', (line + '\n').encode('utf-8')))
+
+                sample += 1
+                time.sleep(interval)
+
             except Exception as e:
                 self._post_rx(('log', (f"Test mode error: {e}", "ERROR")))
                 break
-    
+
     def log_message(self, message: str, msg_type: str = ""):
         """Log a single message to the display and optionally to file"""
         self.log_lines((message,), msg_type)
@@ -1458,7 +1451,9 @@ class SerialGUI:
         """Show about dialog"""
         about_text = """KestrelSAT Ground Control Station
         
-Version: 2.0
+Version: 3.0.0
+Created by Lt Col Wyatt Harris, US Air Force Academy
+
 A comprehensive GUI for serial port communication with advanced real-time plotting.
 
 Features:
@@ -1604,35 +1599,95 @@ For technical support, refer to the README.md file."""
         self.themes.restyle(dialog)
     
     def create_plot_content(self):
-        """Create plot tab content"""
+        """Create plot tab content.
+
+        The whole tab scrolls, not just the channel list: with enough channels
+        every panel below them would otherwise be pushed out of reach. The
+        control buttons are packed to the bottom first so they keep their slice
+        of the window no matter how tall the scrollable content grows.
+        """
+        # Create QApplication if it doesn't exist
+        try:
+            self.qt_app = QtWidgets.QApplication.instance()
+            if self.qt_app is None:
+                self.qt_app = QtWidgets.QApplication([])
+        except Exception:
+            self.qt_app = None
+
+        self.plot_window = None
+        self.plot_widget = None
+
+        # Button bar - packed BOTTOM first so it is always visible regardless
+        # of how much content sits above it.
+        btn_bar = ttk.Frame(self.plot_frame, relief="groove", borderwidth=1)
+        btn_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 5))
+
+        btn_inner = ttk.Frame(btn_bar)
+        btn_inner.pack(anchor="center", pady=6)
+
+        self.show_plot_btn = ttk.Button(btn_inner, text="Show Plot Window", command=self.show_plot_window)
+        self.show_plot_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.pause_plot_btn = ttk.Button(btn_inner, text="Pause Plot", command=self.toggle_plot_pause)
+        self.pause_plot_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.clear_plot_btn = ttk.Button(btn_inner, text="Clear Plot Data", command=self.clear_plot_data)
+        self.clear_plot_btn.pack(side=tk.LEFT)
+
+        # Outer scrollable area - covers all content panels
+        scroll_outer = ttk.Frame(self.plot_frame)
+        scroll_outer.pack(fill=tk.BOTH, expand=True)
+
+        self.plot_scroll_canvas = tk.Canvas(scroll_outer, highlightthickness=0)
+        plot_scrollbar = ttk.Scrollbar(scroll_outer, orient=tk.VERTICAL,
+                                       command=self.plot_scroll_canvas.yview)
+        self.plot_scroll_canvas.configure(yscrollcommand=plot_scrollbar.set)
+
+        plot_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.plot_scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        content_frame = ttk.Frame(self.plot_scroll_canvas)
+        self._plot_canvas_window = self.plot_scroll_canvas.create_window(
+            (0, 0), window=content_frame, anchor="nw")
+
+        content_frame.bind("<Configure>", self._on_plot_content_configure)
+        self.plot_scroll_canvas.bind(
+            "<Configure>",
+            lambda e: self.plot_scroll_canvas.itemconfig(self._plot_canvas_window, width=e.width))
+
+        # Only claim the wheel while the pointer is over the tab
+        self.plot_scroll_canvas.bind("<Enter>", lambda e: self._bind_plot_scroll())
+        self.plot_scroll_canvas.bind("<Leave>", lambda e: self._unbind_plot_scroll())
+
+        # --- All content panels go inside content_frame ---
+
         # Delimiter selection frame
-        delimiter_frame = ttk.LabelFrame(self.plot_frame, text="Data Parsing", padding="10")
-        delimiter_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+        delimiter_frame = ttk.LabelFrame(content_frame, text="Data Parsing", padding="10")
+        delimiter_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+
         ttk.Label(delimiter_frame, text="Delimiter:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
-        
+
         self.delimiter_var = tk.StringVar(value="comma")
         delim_frame = ttk.Frame(delimiter_frame)
         delim_frame.grid(row=0, column=1, sticky=tk.W)
-        
-        ttk.Radiobutton(delim_frame, text="Comma (,)", variable=self.delimiter_var, 
+
+        ttk.Radiobutton(delim_frame, text="Comma (,)", variable=self.delimiter_var,
                        value="comma", command=self.update_delimiter).pack(side=tk.LEFT)
-        ttk.Radiobutton(delim_frame, text="Space", variable=self.delimiter_var, 
+        ttk.Radiobutton(delim_frame, text="Space", variable=self.delimiter_var,
                        value="space", command=self.update_delimiter).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Radiobutton(delim_frame, text="Tab", variable=self.delimiter_var, 
+        ttk.Radiobutton(delim_frame, text="Tab", variable=self.delimiter_var,
                        value="tab", command=self.update_delimiter).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Radiobutton(delim_frame, text="Other:", variable=self.delimiter_var, 
+        ttk.Radiobutton(delim_frame, text="Other:", variable=self.delimiter_var,
                        value="other", command=self.update_delimiter).pack(side=tk.LEFT, padx=(10, 0))
-        
+
         self.custom_delim_entry = ttk.Entry(delim_frame, width=5)
         self.custom_delim_entry.pack(side=tk.LEFT, padx=(5, 0))
         self.custom_delim_entry.bind('<KeyRelease>', self.on_custom_delimiter_change)
-        
+
         # Buffer and display settings frame
-        settings_frame = ttk.LabelFrame(self.plot_frame, text="Plot Settings", padding="10")
+        settings_frame = ttk.LabelFrame(content_frame, text="Plot Settings", padding="10")
         settings_frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        # Buffer size setting
+
         ttk.Label(settings_frame, text="Buffer Size (samples):").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
         self.buffer_size_var = tk.StringVar(value=str(self.plot_max_points))
         buffer_entry = ttk.Entry(settings_frame, textvariable=self.buffer_size_var, width=10)
@@ -1640,8 +1695,7 @@ For technical support, refer to the README.md file."""
         buffer_entry.bind('<Return>', self.update_buffer_settings)
         buffer_entry.bind('<FocusOut>', self.update_buffer_settings)
         ToolTip(buffer_entry, "Maximum number of samples stored in memory per channel")
-        
-        # Plot width setting
+
         ttk.Label(settings_frame, text="Plot Width (samples):").grid(row=0, column=2, sticky=tk.W, padx=(0, 5))
         self.plot_width_var = tk.StringVar(value=str(self.plot_width))
         width_entry = ttk.Entry(settings_frame, textvariable=self.plot_width_var, width=10)
@@ -1649,17 +1703,14 @@ For technical support, refer to the README.md file."""
         width_entry.bind('<Return>', self.update_buffer_settings)
         width_entry.bind('<FocusOut>', self.update_buffer_settings)
         ToolTip(width_entry, "Number of recent samples to display in the plot")
-        
-        # Apply button
+
         apply_btn = ttk.Button(settings_frame, text="Apply", command=self.update_buffer_settings)
         apply_btn.grid(row=0, column=4, padx=(10, 0))
-        
-        # Clear Buffer button
+
         clear_btn = ttk.Button(settings_frame, text="Clear Buffer", command=self.clear_buffer_only)
         clear_btn.grid(row=0, column=5, padx=(10, 0))
         ToolTip(clear_btn, "Clear only plot data buffer, preserve all channels and settings")
-        
-        # Custom Plot Title (on second row)
+
         ttk.Label(settings_frame, text="Plot Title:").grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(10, 0))
         self.title_var = tk.StringVar(value=self.plot_title_custom)
         title_entry = ttk.Entry(settings_frame, textvariable=self.title_var, width=30)
@@ -1667,21 +1718,20 @@ For technical support, refer to the README.md file."""
         title_entry.bind('<Return>', self.on_title_changed)
         title_entry.bind('<FocusOut>', self.on_title_changed)
         ToolTip(title_entry, "Optional custom title for the plot (leave empty for default)")
-        
+
         # X-Axis selection frame
-        xaxis_frame = ttk.LabelFrame(self.plot_frame, text="Set X-Axis", padding="10")
+        xaxis_frame = ttk.LabelFrame(content_frame, text="Set X-Axis", padding="10")
         xaxis_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         ttk.Label(xaxis_frame, text="X-Axis:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
-        
+
         self.xaxis_var = tk.StringVar(value="Sample Number")
         self.xaxis_combo = ttk.Combobox(xaxis_frame, textvariable=self.xaxis_var, width=20, state="readonly")
         self.xaxis_combo['values'] = ('Sample Number',)
         self.xaxis_combo.grid(row=0, column=1, sticky=tk.W)
         self.xaxis_combo.bind('<<ComboboxSelected>>', self.on_xaxis_changed)
         ToolTip(self.xaxis_combo, "Choose what data to display on the X-axis: sample number or any channel data")
-        
-        # X-axis label override
+
         ttk.Label(xaxis_frame, text="Custom X-Axis Label:").grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=(5, 0))
         self.xlabel_var = tk.StringVar(value=self.x_axis_custom_label)
         xlabel_entry = ttk.Entry(xaxis_frame, textvariable=self.xlabel_var, width=25)
@@ -1689,49 +1739,11 @@ For technical support, refer to the README.md file."""
         xlabel_entry.bind('<Return>', self.on_x_label_changed)
         xlabel_entry.bind('<FocusOut>', self.on_x_label_changed)
         ToolTip(xlabel_entry, "Optional custom label for X-axis (leave empty for automatic)")
-        
-        # PyQtGraph widget frame - placed above the channel list so the plot
-        # controls stay reachable no matter how many channels get detected
-        # (the channel list below is scrollable and bounded in height for
-        # the same reason).
-        plot_container = ttk.Frame(self.plot_frame)
-        plot_container.pack(fill=tk.X, padx=10, pady=5)
 
-        # Create QApplication if it doesn't exist
-        try:
-            self.qt_app = QtWidgets.QApplication.instance()
-            if self.qt_app is None:
-                self.qt_app = QtWidgets.QApplication([])
-        except Exception as e:
-            self.qt_app = None
-
-        # Create PyQtGraph widget in a separate window
-        self.plot_window = None
-        self.plot_widget = None
-
-        # Control buttons for plot
-        plot_control_frame = ttk.Frame(plot_container)
-        plot_control_frame.pack(pady=8)
-
-        self.show_plot_btn = ttk.Button(plot_control_frame, text="Show Plot Window", command=self.show_plot_window)
-        self.show_plot_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.pause_plot_btn = ttk.Button(plot_control_frame, text="Pause Plot", command=self.toggle_plot_pause)
-        self.pause_plot_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.clear_plot_btn = ttk.Button(plot_control_frame, text="Clear Plot Data", command=self.clear_plot_data)
-        self.clear_plot_btn.pack(side=tk.LEFT)
-
-        # Status label
-        self.plot_status_label = ttk.Label(plot_container, text="Click 'Show Plot Window' to display real-time plots")
-        self.plot_status_label.pack(pady=8)
-
-        # Channel visibility frame
-        self.channel_frame = ttk.LabelFrame(self.plot_frame, text="Set Y-Axis", padding="10")
+        # Set Y-Axis frame
+        self.channel_frame = ttk.LabelFrame(content_frame, text="Set Y-Axis", padding="10")
         self.channel_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        # Y-axis custom label at the top of the frame - fixed, not part of
-        # the scrollable channel list below
         ylabel_frame = tk.Frame(self.channel_frame)
         ylabel_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -1742,73 +1754,34 @@ For technical support, refer to the README.md file."""
         self.ylabel_entry.bind('<Return>', self.on_y_label_changed)
         self.ylabel_entry.bind('<FocusOut>', self.on_y_label_changed)
 
-        # Scrollable list of per-channel controls. Packed directly, this list
-        # grows one row per detected channel with no upper bound, and can
-        # push everything below it - including, previously, the plot
-        # controls above - past the bottom of the window with no way to
-        # scroll back up to it. A fixed-height canvas keeps this section's
-        # height bounded regardless of how many channels are detected.
-        self._build_channel_scroll_area()
+        # Channel rows sit directly in channel_frame; the outer canvas scrolls them
+        self.channel_rows_frame = ttk.Frame(self.channel_frame)
+        self.channel_rows_frame.pack(fill=tk.X)
 
         ttk.Label(self.channel_rows_frame, text="No channels detected").pack()
 
-    def _build_channel_scroll_area(self):
-        """Build the scrollable container that holds per-channel plot rows"""
-        scroll_container = ttk.Frame(self.channel_frame)
-        scroll_container.pack(fill=tk.BOTH, expand=True)
+    def _on_plot_content_configure(self, event=None):
+        """Keep the outer scroll region in sync with the content frame."""
+        self.plot_scroll_canvas.configure(scrollregion=self.plot_scroll_canvas.bbox("all"))
 
-        self.channel_canvas = tk.Canvas(scroll_container, height=1, highlightthickness=0)
-        channel_scrollbar = ttk.Scrollbar(scroll_container, orient=tk.VERTICAL,
-                                          command=self.channel_canvas.yview)
-        self.channel_canvas.configure(yscrollcommand=channel_scrollbar.set)
+    def _bind_plot_scroll(self):
+        self.plot_scroll_canvas.bind_all("<MouseWheel>", self._on_plot_mousewheel)
+        self.plot_scroll_canvas.bind_all("<Button-4>", self._on_plot_mousewheel)
+        self.plot_scroll_canvas.bind_all("<Button-5>", self._on_plot_mousewheel)
 
-        self.channel_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        channel_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    def _unbind_plot_scroll(self):
+        self.plot_scroll_canvas.unbind_all("<MouseWheel>")
+        self.plot_scroll_canvas.unbind_all("<Button-4>")
+        self.plot_scroll_canvas.unbind_all("<Button-5>")
 
-        # Rows are packed into this frame, not directly into the canvas
-        self.channel_rows_frame = ttk.Frame(self.channel_canvas)
-        self._channel_canvas_window = self.channel_canvas.create_window(
-            (0, 0), window=self.channel_rows_frame, anchor="nw")
-
-        self.channel_rows_frame.bind("<Configure>", self._on_channel_rows_configure)
-        self.channel_canvas.bind(
-            "<Configure>",
-            lambda e: self.channel_canvas.itemconfig(self._channel_canvas_window, width=e.width))
-
-        # Only scroll the channel list with the mouse wheel while the
-        # pointer is actually over it, so it doesn't hijack scrolling
-        # elsewhere on the Plot tab.
-        self.channel_canvas.bind("<Enter>", lambda e: self._bind_channel_scroll())
-        self.channel_canvas.bind("<Leave>", lambda e: self._unbind_channel_scroll())
-
-    def _on_channel_rows_configure(self, event=None):
-        """Keep the scroll region in sync and size the canvas to fit the
-        current channel list, up to CHANNEL_LIST_MAX_HEIGHT. A handful of
-        channels shows in full with no scrollbar needed; a long list scrolls
-        instead of growing without bound.
-        """
-        self.channel_canvas.configure(scrollregion=self.channel_canvas.bbox("all"))
-        needed = self.channel_rows_frame.winfo_reqheight()
-        self.channel_canvas.configure(height=min(needed, self.CHANNEL_LIST_MAX_HEIGHT))
-
-    def _bind_channel_scroll(self):
-        self.channel_canvas.bind_all("<MouseWheel>", self._on_channel_mousewheel)
-        self.channel_canvas.bind_all("<Button-4>", self._on_channel_mousewheel)
-        self.channel_canvas.bind_all("<Button-5>", self._on_channel_mousewheel)
-
-    def _unbind_channel_scroll(self):
-        self.channel_canvas.unbind_all("<MouseWheel>")
-        self.channel_canvas.unbind_all("<Button-4>")
-        self.channel_canvas.unbind_all("<Button-5>")
-
-    def _on_channel_mousewheel(self, event):
+    def _on_plot_mousewheel(self, event):
         if event.num == 4:
             delta = -1
         elif event.num == 5:
             delta = 1
         else:
             delta = -1 if event.delta > 0 else 1
-        self.channel_canvas.yview_scroll(delta, "units")
+        self.plot_scroll_canvas.yview_scroll(delta, "units")
 
     def update_delimiter(self):
         """Update the delimiter based on selection"""
@@ -2506,7 +2479,10 @@ For technical support, refer to the README.md file."""
         ttk.Label(self.channel_rows_frame, text="No channels detected").pack()
 
         # Reset the scroll position now that the list is empty
-        self.channel_canvas.yview_moveto(0)
+        try:
+            self.plot_scroll_canvas.yview_moveto(0)
+        except Exception:
+            pass
 
         self.themes.restyle(self.channel_frame)
 
@@ -2558,6 +2534,14 @@ def main():
     try:
         root = tk.Tk()
         app = SerialGUI(root)
+
+        # Close the PyInstaller splash screen (no-op when running from source)
+        try:
+            import pyi_splash  # type: ignore
+            pyi_splash.close()
+        except ImportError:
+            pass
+
         root.mainloop()
     except KeyboardInterrupt:
         print("Application interrupted by user")
