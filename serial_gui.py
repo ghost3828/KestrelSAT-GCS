@@ -82,7 +82,9 @@ except ImportError as e:
     QtWidgets = DummyQtWidgets()
     pg = DummyPG()
 import threading
+import queue
 import time
+import itertools
 import datetime
 import json
 import os
@@ -615,6 +617,11 @@ class SerialGUI:
     # Lines retained in the serial monitor. Tk's Text widget degrades badly
     # once it holds hundreds of thousands of lines.
     MAX_MONITOR_LINES = 5000
+    # Reader -> GUI queue. Bounded so a stalled UI cannot exhaust memory.
+    RX_QUEUE_MAX = 4096
+    RX_PUMP_INTERVAL_MS = 20
+    # Chunks drained per pump, so one burst cannot monopolise the event loop.
+    RX_PUMP_BUDGET = 200
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -628,6 +635,18 @@ class SerialGUI:
         self._sps_timer = None
         self._filesize_timer = None
         self._plot_timer = None
+        self._rx_timer = None
+
+        # Reader -> GUI transport (see _post_rx / _pump_rx)
+        self._rx_queue = queue.Queue(maxsize=self.RX_QUEUE_MAX)
+        self._rx_dropped = 0
+        self._rx_drop_reported = False
+        self._log_dirty = False
+        self._log_error_reported = False
+        self._plot_error_reported = False
+        # Tracks whether each curve currently holds data, so hidden curves are
+        # cleared once rather than on every frame.
+        self._curve_has_data = {}
 
         # Serial connection
         self.serial_connection: Optional[serial.Serial] = None
@@ -724,7 +743,10 @@ class SerialGUI:
         
         # Start SPS update timer
         self.update_sps_display()
-        
+
+        # Start draining the reader queue
+        self._pump_rx()
+
         # Bind window close event
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
@@ -1353,16 +1375,56 @@ class SerialGUI:
                 if pending > 0:
                     data = conn.read(pending)
                     if data:
-                        self.root.after(0, self.display_received_data, data)
+                        self._post_rx(('data', data))
                 time.sleep(0.01)  # Small delay to prevent excessive CPU usage
             except serial.SerialException:
-                self.root.after(0, self.handle_connection_error)
+                self._post_rx(('error', None))
                 break
             except Exception:
-                # Includes the TclError/RuntimeError raised by after() once the
-                # interpreter is gone. Without this the daemon thread would die
-                # with a traceback to a stderr nobody sees in a windowed build.
                 break
+
+    # -- reader -> GUI transport ------------------------------------------
+    #
+    # Workers must not call root.after() directly. tkinter marshals a
+    # cross-thread call by queueing a Tcl event and then *blocking* on a
+    # condition variable until the main loop runs it, so every millisecond the
+    # GUI spent redrawing was a millisecond the reader was not draining the
+    # serial port. A plain queue plus a periodic pump on the main thread
+    # decouples the two, and gives us somewhere to apply backpressure.
+
+    def _post_rx(self, item):
+        """Called from a worker thread. Never touches Tcl."""
+        try:
+            self._rx_queue.put_nowait(item)
+        except queue.Full:
+            self._rx_dropped += 1
+
+    def _pump_rx(self):
+        """Drain the worker queue on the main thread."""
+        if self._closing:
+            return
+
+        for _ in range(self.RX_PUMP_BUDGET):
+            try:
+                kind, payload = self._rx_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if kind == 'data':
+                self.display_received_data(payload)
+            elif kind == 'log':
+                self.log_message(payload[0], payload[1])
+            elif kind == 'error':
+                self.handle_connection_error()
+                break  # disconnected; anything still queued is stale
+
+        if self._rx_dropped and not self._rx_drop_reported:
+            self._rx_drop_reported = True
+            self.log_message(
+                f"Receive queue overflowed - {self._rx_dropped} chunk(s) dropped. "
+                "The interface cannot keep up with the incoming data rate.", "ERROR")
+
+        self._rx_timer = self.root.after(self.RX_PUMP_INTERVAL_MS, self._pump_rx)
     
     def handle_connection_error(self):
         """Handle connection errors"""
@@ -1400,6 +1462,7 @@ class SerialGUI:
                 parts = self.serial_buffer.split('\n')
                 self.serial_buffer = parts.pop()  # trailing partial line
 
+                lines = []
                 for line in parts:
                     line = line.rstrip('\r')  # Remove carriage return if present
 
@@ -1411,13 +1474,19 @@ class SerialGUI:
                             self.first_line_received = True
                             continue
 
-                        self.log_message(line, "RECEIVED")
+                        lines.append(line)
 
                         # Count samples for SPS calculation
                         self.samples_received += 1
 
                         # Parse data for plotting
                         self.parse_plot_data(line)
+
+                # One widget update for the whole chunk. Per line this used to
+                # cost two config() calls, an insert, a scrollbar callback and
+                # a see(END) - roughly seven Tcl round trips each.
+                if lines:
+                    self.log_lines(lines, "RECEIVED")
 
         except Exception as e:
             self.log_message(f"Error displaying data: {str(e)}", "ERROR")
@@ -1443,8 +1512,7 @@ class SerialGUI:
                 # Simulate echo response after a short delay
                 def simulate_echo():
                     time.sleep(0.1)
-                    response = f"Echo: {data.rstrip()}"
-                    self.root.after(0, lambda: self.log_message(response, "RECEIVED"))
+                    self._post_rx(('log', (f"Echo: {data.rstrip()}", "RECEIVED")))
                 
                 threading.Thread(target=simulate_echo, daemon=True).start()
             else:
@@ -1475,7 +1543,7 @@ class SerialGUI:
                     voltage = random.uniform(3.0, 5.0)
                     
                     sensor_data = f"Sensor: T={temp:.1f}°C, H={humidity:.1f}%, V={voltage:.2f}V"
-                    self.root.after(0, lambda msg=sensor_data: self.log_message(msg, "RECEIVED"))
+                    self._post_rx(('log', (sensor_data, "RECEIVED")))
                 
                 # Send plot data every 100ms (10 times per second)
                 if self.test_counter % 10 == 0:
@@ -1488,7 +1556,7 @@ class SerialGUI:
                     
                     # Send as bytes to simulate real serial data
                     data_bytes = (plot_data + '\n').encode('utf-8')
-                    self.root.after(0, self.display_received_data, data_bytes)
+                    self._post_rx(('data', data_bytes))
                 
                 # Send system status every 10 seconds
                 elif self.test_counter % 1000 == 500:  # Offset timing
@@ -1499,55 +1567,82 @@ class SerialGUI:
                         "Signal: Strong"
                     ]
                     msg = random.choice(status_messages)
-                    self.root.after(0, lambda message=msg: self.log_message(message, "RECEIVED"))
+                    self._post_rx(('log', (msg, "RECEIVED")))
                 
                 self.test_counter += 1
                 time.sleep(0.01)
                 
             except Exception as e:
-                # Report through after() too, but never let a second failure
-                # (e.g. the interpreter is already gone) escape and skip the
-                # break below.
-                try:
-                    self.root.after(
-                        0, lambda msg=str(e): self.log_message(f"Test mode error: {msg}", "ERROR"))
-                except Exception:
-                    pass
+                self._post_rx(('log', (f"Test mode error: {e}", "ERROR")))
                 break
     
     def log_message(self, message: str, msg_type: str = ""):
-        """Log a message to the display and optionally to file"""
-        self.received_text.config(state=tk.NORMAL)
-        
+        """Log a single message to the display and optionally to file"""
+        self.log_lines((message,), msg_type)
+
+    def log_lines(self, messages, msg_type: str = ""):
+        """Log a batch of same-type messages in one widget update.
+
+        Written for the receive path, where a single serial chunk routinely
+        carries dozens of lines. Doing this per line cost two config() calls,
+        an insert, a scrollbar callback and a see(END) each.
+        """
+        if not messages:
+            return
+
         timestamp_str = ""
         # Always show timestamps for SYSTEM messages, otherwise use user setting
         if msg_type == "SYSTEM" or self.timestamp.get():
             timestamp_str = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] "
-        
-        # Build the message without type prefix
-        display_message = f"{timestamp_str}{message}\n"
-        
-        # For file logging, include the type prefix
-        file_message = f"{timestamp_str}{msg_type + ': ' if msg_type else ''}{message}\n"
-        
-        # Display in GUI with appropriate formatting
-        if msg_type and msg_type in ["RECEIVED", "SENT", "SYSTEM", "ERROR"]:
-            self.received_text.insert(tk.END, display_message, msg_type)
+
+        display_block = "".join(f"{timestamp_str}{m}\n" for m in messages)
+
+        self.received_text.config(state=tk.NORMAL)
+        if msg_type and msg_type in ("RECEIVED", "SENT", "SYSTEM", "ERROR"):
+            self.received_text.insert(tk.END, display_block, msg_type)
         else:
-            self.received_text.insert(tk.END, display_message)
-        
+            self.received_text.insert(tk.END, display_block)
+
+        self._trim_monitor()
+
         if self.auto_scroll.get():
             self.received_text.see(tk.END)
-        
         self.received_text.config(state=tk.DISABLED)
-        
+
         # Write to log file if logging is active (with type prefix for file)
         if self.logging_active and self.log_file_handle:
+            prefix = f"{msg_type}: " if msg_type else ""
             try:
-                self.log_file_handle.write(file_message)
-                self.log_file_handle.flush()  # Ensure data is written immediately
+                self.log_file_handle.writelines(
+                    f"{timestamp_str}{prefix}{m}\n" for m in messages)
+                # Deliberately not flushed here. A flush per line is a syscall
+                # per line (10-40 us on Windows); update_file_size_display()
+                # flushes once a second instead, and stop_logging() flushes on
+                # the way out. Worst case on a hard kill is the tail of an 8 KB
+                # buffer - note flush() never protected against power loss
+                # anyway, only against process crash.
+                self._log_dirty = True
             except Exception as e:
-                print(f"Error writing to log file: {e}")
+                self._report_log_write_error(e)
+
+    def _trim_monitor(self):
+        """Keep the monitor bounded. Caller must have set state=NORMAL."""
+        try:
+            line_count = int(self.received_text.index('end-1c').split('.')[0])
+            if line_count > self.MAX_MONITOR_LINES:
+                excess = line_count - self.MAX_MONITOR_LINES
+                self.received_text.delete('1.0', f'{excess + 1}.0')
+        except (tk.TclError, ValueError):
+            pass
+
+    def _report_log_write_error(self, exc):
+        """Surface a log-file write failure once, in the UI.
+
+        print() is useless here: a windowed PyInstaller build has no stdout.
+        """
+        if not self._log_error_reported:
+            self._log_error_reported = True
+            self.log_message(f"Error writing to log file: {exc}", "ERROR")
     
     def clear_display(self):
         """Clear the received data display"""
@@ -1602,6 +1697,8 @@ class SerialGUI:
         if filename:
             try:
                 self.log_file_handle = open(filename, 'w', encoding='utf-8')
+                self._log_dirty = False
+                self._log_error_reported = False
                 self.log_file_path = filename
                 self.logging_active = True
                 
@@ -1621,19 +1718,24 @@ class SerialGUI:
     
     def stop_logging(self):
         """Stop continuous logging"""
-        if self.logging_active and self.log_file_handle:
+        # Deliberately not "and self.log_file_handle": if the handle were
+        # missing while logging_active was set, the finally below would be
+        # skipped and the UI would stay stuck on "Stop Logging" forever.
+        if self.logging_active:
             try:
-                # Write footer to log file
-                footer = f"# Serial Communication Log Ended: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                self.log_file_handle.write(footer)
-                self.log_file_handle.close()
-                
+                if self.log_file_handle:
+                    # Write footer to log file
+                    footer = f"# Serial Communication Log Ended: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    self.log_file_handle.write(footer)
+                    self.log_file_handle.close()  # implies a final flush
+                    self._log_dirty = False
+
                 filename = os.path.basename(self.log_file_path) if self.log_file_path else "log file"
                 self.log_message(f"Stopped logging to: {filename}", "SYSTEM")
-                
+
             except Exception as e:
-                print(f"Error closing log file: {e}")
-            
+                self._report_log_write_error(e)
+
             finally:
                 self.log_file_handle = None
                 self.log_file_path = None
@@ -1645,8 +1747,19 @@ class SerialGUI:
                 self._refresh_log_status_color()
     
     def update_file_size_display(self):
-        """Update the file size display for active logging"""
-        if self.logging_active and self.log_file_path and os.path.exists(self.log_file_path):
+        """Flush the log and refresh the file size readout, once a second"""
+        # Batched counterpart to the per-line flush that log_lines() no longer
+        # does. Also makes the size below reflect what is actually on disk.
+        if self._log_dirty and self.log_file_handle:
+            self._log_dirty = False
+            try:
+                self.log_file_handle.flush()
+            except Exception as e:
+                self._report_log_write_error(e)
+
+        status = "Not logging"
+        if self.logging_active and self.log_file_path:
+            status = "Logging active"
             try:
                 size = os.path.getsize(self.log_file_path)
                 if size < 1024:
@@ -1655,14 +1768,17 @@ class SerialGUI:
                     size_str = f"{size / 1024:.1f} KB"
                 else:
                     size_str = f"{size / (1024 * 1024):.1f} MB"
-                
-                filename = os.path.basename(self.log_file_path)
-                self.log_status_var.set(f"Logging to: {filename} ({size_str})")
-            except Exception:
-                self.log_status_var.set("Logging active")
-        elif not self.logging_active:
-            self.log_status_var.set("Not logging")
-        
+
+                status = f"Logging to: {os.path.basename(self.log_file_path)} ({size_str})"
+            except OSError:
+                pass
+
+        # Only touch the variable when it actually changes; setting it
+        # unconditionally dirtied the label and forced a redraw every second
+        # for the life of the process.
+        if self.log_status_var.get() != status:
+            self.log_status_var.set(status)
+
         # Schedule next update
         self._filesize_timer = self.root.after(1000, self.update_file_size_display)
     
@@ -1736,7 +1852,7 @@ class SerialGUI:
         # below both call log_message(), and handle_connection_error() can pop
         # a modal dialog - all of which run a nested event loop in which these
         # would otherwise keep firing against half-torn-down state.
-        for attr in ('_sps_timer', '_filesize_timer', '_plot_timer'):
+        for attr in ('_sps_timer', '_filesize_timer', '_plot_timer', '_rx_timer'):
             timer_id = getattr(self, attr, None)
             if timer_id is not None:
                 try:
@@ -2398,8 +2514,10 @@ For technical support, refer to the README.md file."""
                 self.channel_color_index[channel_name] = color_index
                 self.channel_color_user[channel_name] = False
                 
-                # Set default dot size and line visibility
-                self.channel_dot_size[channel_name] = 4
+                # Lines only by default. A symbol turns the curve into a
+                # ScatterPlotItem, which rasterises one pixmap per point:
+                # 500 points x 5 channels x 30 fps is 75k symbol draws/s.
+                self.channel_dot_size[channel_name] = 0
                 self.channel_show_line[channel_name] = True
                 
                 self.add_channel_control(channel_name)
@@ -2542,8 +2660,10 @@ For technical support, refer to the README.md file."""
         # Initialize custom name
         self.channel_custom_names[channel_name] = channel_name
         
-        # Theme the row that was just built, then colour the swatch
-        self.themes.restyle(self.channel_frame)
+        # Theme only the row just built. Restyling self.channel_frame here
+        # walked every previously added row too, making the cost of adding N
+        # channels O(N^2) - and this runs on the receive path.
+        self.themes.restyle(channel_control_frame)
         self.update_color_button_appearance(channel_name)
     
     def toggle_channel_visibility(self, channel_name: str, visible: bool):
@@ -2569,12 +2689,19 @@ For technical support, refer to the README.md file."""
     
     def schedule_plot_update(self):
         """Schedule a throttled plot update to improve performance"""
+        # Called once per received line, so bail before doing any work when
+        # there is nothing to redraw.
+        if self.plot_widget is None or self.plot_paused:
+            return
+
         current_time = time.time()
         
         # If enough time has passed since last update, update immediately
         if current_time - self.last_plot_update >= self.plot_update_interval:
             self.update_plot_display()
-            self.last_plot_update = current_time
+            # After, not before: if a redraw takes longer than the interval
+            # this keeps the next one a full interval away.
+            self.last_plot_update = time.time()
             self.pending_plot_update = False
         elif not self.pending_plot_update:
             # Schedule an update for later
@@ -2771,86 +2898,95 @@ For technical support, refer to the README.md file."""
             self.schedule_plot_update()  # Use throttled update
     
     def update_plot_display(self):
-        """Update the plot display with current data (optimized for performance)"""
-        if not hasattr(self, 'plot_widget') or self.plot_widget is None:
+        """Push the current buffers onto the plot curves.
+
+        Runs up to ~30x/s, so everything here is per-frame cost. Only the last
+        plot_width samples are ever needed, so they are sliced straight out of
+        the deque with islice rather than materialising the whole buffer (which
+        can hold up to 100,000 points per channel) and discarding most of it.
+        """
+        if self.plot_widget is None or self.plot_paused:
             return
-        
-        # Skip update if plot is paused
-        if self.plot_paused:
-            return
-            
+
         try:
-            # Determine x-axis data source
+            # Resolve the x-axis channel once per frame, not per curve
             x_axis_channel = None
             if self.x_axis_selection != "Sample Number":
-                # Find the channel corresponding to the selected display name
                 for channel_name, display_name in self.channel_custom_names.items():
                     if display_name == self.x_axis_selection:
                         x_axis_channel = channel_name
                         break
-                # If not found in custom names, check original names
                 if x_axis_channel is None and self.x_axis_selection in self.plot_data:
                     x_axis_channel = self.x_axis_selection
-            
+
+            # Hoisted out of the per-curve loop: this used to be re-materialised
+            # once for every channel, so N channels copied the same deque N
+            # times per frame.
+            x_tail = None
+            if x_axis_channel and x_axis_channel in self.plot_data:
+                x_tail = self._tail(self.plot_data[x_axis_channel])
+
+            width = self.plot_width
             for channel_name, curve in self.plot_curves.items():
-                if channel_name in self.plot_data and self.channel_visibility.get(channel_name, True):
-                    data_tuples = self.plot_data[channel_name]
-                    if data_tuples:
-                        # Convert deque to list only once
-                        data_list = list(data_tuples)
-                        
-                        # Limit displayed data to plot_width for performance
-                        if len(data_list) > self.plot_width:
-                            data_list = data_list[-self.plot_width:]
-                        
-                        # Get x-axis data
-                        if x_axis_channel and x_axis_channel in self.plot_data:
-                            # Use selected channel for x-axis
-                            x_data_tuples = list(self.plot_data[x_axis_channel])
-                            if len(x_data_tuples) > self.plot_width:
-                                x_data_tuples = x_data_tuples[-self.plot_width:]
-                            
-                            # Align data by sample number
-                            min_length = min(len(data_list), len(x_data_tuples))
-                            if min_length > 0:
-                                data_list = data_list[-min_length:]
-                                x_data_tuples = x_data_tuples[-min_length:]
-                                
-                                # Data decimation for very large datasets
-                                if min_length > 10000:
-                                    step = min_length // 5000
-                                    data_list = data_list[::step]
-                                    x_data_tuples = x_data_tuples[::step]
-                                
-                                if data_list and x_data_tuples:
-                                    # Extract y-data from current channel and x-data from x-axis channel
-                                    x_data = [x_sample[1] for x_sample in x_data_tuples]  # Use value, not sample number
-                                    y_data = [y_sample[1] for y_sample in data_list]
-                                    curve.setData(x_data, y_data)
-                                else:
-                                    curve.setData([], [])
-                            else:
-                                curve.setData([], [])
-                        else:
-                            # Use sample numbers for x-axis (default behavior)
-                            # Data decimation for very large datasets
-                            if len(data_list) > 10000:
-                                # Show every nth point when dataset is very large
-                                step = len(data_list) // 5000  # Decimate to ~5000 points max
-                                data_list = data_list[::step]
-                            
-                            # Extract coordinates efficiently
-                            if data_list:
-                                x_data, y_data = zip(*data_list)  # More efficient than list comprehensions
-                                curve.setData(x_data, y_data)
-                            else:
-                                curve.setData([], [])
+                visible = (channel_name in self.plot_data
+                           and self.channel_visibility.get(channel_name, True))
+                if not visible:
+                    # setData() is not free - it reconfigures the item, drops
+                    # the cached bounds and triggers an auto-range recompute -
+                    # so only do it on the transition, not every frame.
+                    if self._curve_has_data.get(channel_name, True):
+                        curve.setData([], [])
+                        self._curve_has_data[channel_name] = False
+                    continue
+
+                y_tail = self._tail(self.plot_data[channel_name])
+                if not y_tail:
+                    if self._curve_has_data.get(channel_name, True):
+                        curve.setData([], [])
+                        self._curve_has_data[channel_name] = False
+                    continue
+
+                if x_tail is not None:
+                    # Pair the two channels by position from the newest end
+                    n = min(len(y_tail), len(x_tail))
+                    if n == 0:
+                        if self._curve_has_data.get(channel_name, True):
+                            curve.setData([], [])
+                            self._curve_has_data[channel_name] = False
+                        continue
+                    x_data = [p[1] for p in x_tail[-n:]]
+                    y_data = [p[1] for p in y_tail[-n:]]
                 else:
-                    curve.setData([], [])
+                    # Default: sample number on x
+                    x_data, y_data = zip(*y_tail)
+
+                curve.setData(x_data, y_data)
+                self._curve_has_data[channel_name] = True
+
         except Exception as e:
-            # Silently handle plot update errors
-            pass
-    
+            # Report once. This handler previously discarded every plotting
+            # failure with no trace at all, so a channel could silently stop
+            # updating for the rest of the session.
+            if not self._plot_error_reported:
+                self._plot_error_reported = True
+                self.log_message(f"Error updating plot: {e}", "ERROR")
+
+    def _tail(self, samples):
+        """Return the newest plot_width samples of a deque as a list.
+
+        islice avoids building an intermediate copy of the whole buffer just to
+        throw most of it away. Decimation is left to pyqtgraph's own
+        setDownsampling, which is numpy-based and preserves the min/max
+        envelope instead of aliasing spikes away like a [::step] slice.
+        """
+        n = len(samples)
+        if n == 0:
+            return []
+        width = self.plot_width
+        if n <= width:
+            return list(samples)
+        return list(itertools.islice(samples, n - width, n))
+
     def show_plot_window(self):
         """Show the plot window"""
         if not PYQTGRAPH_AVAILABLE:
@@ -2906,6 +3042,15 @@ For technical support, refer to the README.md file."""
                 self.update_x_axis_label()
                 
                 self.plot_widget.showGrid(True, True)
+
+                # Let pyqtgraph do the data reduction. Clipping to the visible
+                # range and peak-preserving downsampling are numpy-based and
+                # keep spikes visible, unlike a [::step] slice.
+                try:
+                    self.plot_widget.setClipToView(True)
+                    self.plot_widget.setDownsampling(auto=True, mode='peak')
+                except Exception:
+                    pass
 
                 # Add legend using LegendItem
                 if PYQTGRAPH_AVAILABLE:
@@ -2992,6 +3137,7 @@ For technical support, refer to the README.md file."""
         # Clear only the actual plot data
         self.plot_data.clear()
         self.plot_curves.clear()
+        self._curve_has_data.clear()
 
         # Clear channel-related data
         self.channel_visibility.clear()
