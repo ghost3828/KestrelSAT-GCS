@@ -48,8 +48,8 @@ app.connect()
 # released by the actual event loop. (That coupling is finding T1.1.)
 root.after(2500, root.quit)
 root.mainloop()
-check(sorted(app.plot_data) == ["Noise", "Sine", "Temp"],
-      "TEST MODE created channels: %s" % sorted(app.plot_data))
+check(sorted(app.channels) == ["Noise", "Sine", "Temp"],
+      "TEST MODE created channels: %s" % sorted(app.channels))
 check(len(app.serial_buffer) < 200,
       "serial_buffer is drained, not accumulating (len=%d)" % len(app.serial_buffer))
 app.on_closing()
@@ -63,8 +63,8 @@ check(app.delimiter == "\t", "delimiter is a real tab, not %r" % app.delimiter)
 app.display_received_data(b"A:1\tB:2\tC:3\n")
 app.display_received_data(b"A:4\tB:5\tC:6\n")
 root.update()
-check(sorted(app.plot_data) == ["A", "B", "C"],
-      "tab-separated line split into channels: %s" % sorted(app.plot_data))
+check(sorted(app.channels) == ["A", "B", "C"],
+      "tab-separated line split into channels: %s" % sorted(app.channels))
 app.on_closing()
 
 # --- T0.2/A2: buffer cap ---------------------------------------------------
@@ -148,8 +148,8 @@ huge = ",".join(str(i) for i in range(5000)) + "\n"
 app.display_received_data(huge.encode())
 app.display_received_data(huge.encode())
 root.update()
-check(len(app.plot_data) <= app.MAX_CHANNELS,
-      "channels capped at %d (is %d)" % (app.MAX_CHANNELS, len(app.plot_data)))
+check(len(app.channels) <= app.MAX_CHANNELS,
+      "channels capped at %d (is %d)" % (app.MAX_CHANNELS, len(app.channels)))
 app.on_closing()
 
 # --- T3.3: per-channel attributes are released on clear --------------------
@@ -158,6 +158,7 @@ root, app = make_app()
 
 
 def channel_attrs():
+    """Anything still hanging off the app that should have gone with a clear."""
     return [a for a in vars(app)
             if a.startswith(("channel_var_", "name_var_", "thickness_var_",
                              "dot_size_var_", "line_var_", "color_btn_"))]
@@ -170,6 +171,7 @@ for cycle in range(5):
     app.clear_plot_data()
     root.update()
 check(channel_attrs() == [], "no leaked per-channel attributes (found %d)" % len(channel_attrs()))
+check(app.channels == {}, "channel registry empty after clear (%d left)" % len(app.channels))
 app.on_closing()
 
 # --- T3.2: legend consistency, fixed by the shared helpers -----------------

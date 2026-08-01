@@ -26,3 +26,6 @@ tempCodeRunnerFile.py
 # OS
 .DS_Store
 Thumbs.db
+
+# Test scratch
+tests/logs/

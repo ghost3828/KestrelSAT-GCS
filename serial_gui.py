@@ -40,6 +40,7 @@ import json
 import os
 import random
 from collections import deque
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, Callable, List
 
 
@@ -272,6 +273,43 @@ class ToolTip:
         if self.tooltip_window:
             self.tooltip_window.destroy()
             self.tooltip_window = None
+
+
+@dataclass
+class Channel:
+    """Everything the app knows about one telemetry channel.
+
+    This replaces ten dicts and six dynamically-named instance attributes that
+    were all keyed by channel name and had to be kept in step by hand on every
+    add and clear. A channel now either exists in full or not at all.
+    """
+
+    name: str
+    data: deque
+    color: str
+    color_index: int = 0
+    color_is_user: bool = False       # a hand-picked colour survives theme changes
+    thickness: int = 2
+    dot_size: int = 0
+    show_line: bool = True
+    visible: bool = True
+    display_name: str = ""
+    # pyqtgraph
+    curve: Any = None
+    has_data: bool = False            # is the curve currently holding points
+    # the Tk row for this channel
+    row: Any = None
+    visible_var: Any = None
+    name_var: Any = None
+    thickness_var: Any = None
+    dot_size_var: Any = None
+    line_var: Any = None
+    color_btn: Any = None
+
+    @property
+    def label(self) -> str:
+        """Name shown in the legend and the X-axis dropdown."""
+        return self.display_name or self.name
 
 
 class ThemeManager:
@@ -597,7 +635,8 @@ class SerialGUI:
         self._plot_error_reported = False
         # Tracks whether each curve currently holds data, so hidden curves are
         # cleared once rather than on every frame.
-        self._curve_has_data = {}
+        # Per-channel state, keyed by channel name. See the Channel dataclass.
+        self.channels: Dict[str, Channel] = {}
 
         # Serial connection
         self.serial_connection: Optional[serial.Serial] = None
@@ -622,21 +661,11 @@ class SerialGUI:
         self.log_file_handle = None
         
         # Plotting functionality
-        self.plot_data = {}
         self.plot_colors = list(CURRENT_THEME["plot_palette"])  # refreshed on theme change
         self.plot_max_points = 1000
         self.plot_width = 500  # Number of samples to display in plot
         self.delimiter = ','
-        self.channel_visibility = {}
-        self.plot_curves = {}
         self.plot_paused = False  # Flag to pause/resume plotting
-        self.channel_thickness = {}  # Store line thickness for each channel
-        self.channel_colors = {}  # Store custom colors for each channel
-        self.channel_color_index = {}  # Palette slot per channel (keeps hue position across themes)
-        self.channel_color_user = {}  # True once the user picks a colour by hand
-        self.channel_custom_names = {}  # Store custom names for each channel
-        self.channel_dot_size = {}  # Store dot size for each channel
-        self.channel_show_line = {}  # Store line visibility for each channel
         self.x_axis_selection = "Sample Number"  # Default x-axis is sample number
         self.x_axis_custom_label = ""  # Custom X-axis label override
         self.y_axis_custom_label = ""  # Custom Y-axis label override
@@ -910,7 +939,7 @@ class SerialGUI:
         self.plot_colors = list(c["plot_palette"])
         self._configure_text_tags(c)
         self._remap_auto_channel_colors(c)
-        for channel_name in list(self.channel_colors):
+        for channel_name in self.channels:
             self.update_color_button_appearance(channel_name)
         self.update_status_indicator(self.is_connected)
         self._refresh_log_status_color()
@@ -923,11 +952,10 @@ class SerialGUI:
         channel keeps its hue position when the theme changes.
         """
         palette = c["plot_palette"]
-        for channel_name in list(self.channel_colors):
-            if self.channel_color_user.get(channel_name, False):
+        for ch in self.channels.values():
+            if ch.color_is_user:
                 continue
-            idx = self.channel_color_index.get(channel_name, 0) % len(palette)
-            self.channel_colors[channel_name] = palette[idx]
+            ch.color = palette[ch.color_index % len(palette)]
 
     # -- curve styling ----------------------------------------------------
     #
@@ -938,40 +966,33 @@ class SerialGUI:
 
     def _channel_style(self, channel_name: str):
         """pen/symbol keyword arguments for a channel's current settings."""
-        color = self.channel_colors.get(channel_name, self.plot_colors[0])
-        thickness = self.channel_thickness.get(
-            channel_name, CURRENT_THEME["default_line_width"])
-        dot_size = self.channel_dot_size.get(channel_name, 0)
-        show_line = self.channel_show_line.get(channel_name, True)
+        ch = self.channels[channel_name]
         return {
-            'pen': pg.mkPen(color=color, width=thickness) if show_line else None,
-            'symbol': 'o' if dot_size > 0 else None,
-            'symbolSize': dot_size if dot_size > 0 else 1,
-            'symbolBrush': color,
+            'pen': pg.mkPen(color=ch.color, width=ch.thickness) if ch.show_line else None,
+            'symbol': 'o' if ch.dot_size > 0 else None,
+            'symbolSize': ch.dot_size if ch.dot_size > 0 else 1,
+            'symbolBrush': ch.color,
         }
 
     def _create_curve(self, channel_name: str):
         """Create the plot curve for a channel and add it to the legend."""
-        if not PYQTGRAPH_AVAILABLE or self.plot_widget is None:
+        ch = self.channels.get(channel_name)
+        if not PYQTGRAPH_AVAILABLE or self.plot_widget is None or ch is None:
             return
         try:
-            style = self._channel_style(channel_name)
-            curve = self.plot_widget.plot(name=channel_name, **style)
-            self.plot_curves[channel_name] = curve
-            self._curve_has_data[channel_name] = False
+            ch.curve = self.plot_widget.plot(name=ch.name, **self._channel_style(channel_name))
+            ch.has_data = False
             if self.plot_legend is not None:
-                display_name = self.channel_custom_names.get(channel_name, channel_name)
-                self.plot_legend.addItem(curve, display_name)
+                self.plot_legend.addItem(ch.curve, ch.label)
         except Exception:
             pass
 
     def _apply_channel_style(self, channel_name: str):
         """Re-apply a channel's pen and symbol to its existing curve."""
-        if not PYQTGRAPH_AVAILABLE:
+        ch = self.channels.get(channel_name)
+        if not PYQTGRAPH_AVAILABLE or ch is None or ch.curve is None:
             return
-        curve = self.plot_curves.get(channel_name)
-        if curve is None:
-            return
+        curve = ch.curve
         try:
             style = self._channel_style(channel_name)
             curve.setPen(style['pen'])
@@ -982,18 +1003,24 @@ class SerialGUI:
         except Exception:
             pass
 
+    def _drop_curves(self):
+        """Forget every curve, e.g. after the plot window has been closed."""
+        for ch in self.channels.values():
+            ch.curve = None
+            ch.has_data = False
+
     def _rebuild_legend(self):
         """Rebuild legend entries from the current names and visibility."""
         if not PYQTGRAPH_AVAILABLE or self.plot_legend is None:
             return
         try:
             self.plot_legend.clear()
-            for name, curve in self.plot_curves.items():
+            for ch in self.channels.values():
                 # Filtering here consistently is the point: update_channel_name
                 # used to rebuild without it, so renaming any channel made
                 # previously hidden ones reappear in the legend.
-                if self.channel_visibility.get(name, True):
-                    self.plot_legend.addItem(curve, self.channel_custom_names.get(name, name))
+                if ch.curve is not None and ch.visible:
+                    self.plot_legend.addItem(ch.curve, ch.label)
         except Exception:
             pass
 
@@ -1015,7 +1042,7 @@ class SerialGUI:
 
     def _repen_all_curves(self):
         """Push the current channel colours onto live pyqtgraph curves"""
-        for channel_name in list(self.plot_curves):
+        for channel_name in self.channels:
             self._apply_channel_style(channel_name)
 
     def _apply_pyqtgraph_theme(self, c: Dict[str, Any]):
@@ -1909,7 +1936,7 @@ class SerialGUI:
             self.plot_window = None
             self.plot_widget = None
             self.plot_legend = None
-            self.plot_curves.clear()
+            self._drop_curves()
     
     def show_preferences(self):
         """Show the preferences dialog"""
@@ -2385,9 +2412,8 @@ For technical support, refer to the README.md file."""
             
             # Update existing deques if buffer size changed
             if old_max_points != new_buffer_size:
-                for channel_name in self.plot_data:
-                    old_data = list(self.plot_data[channel_name])
-                    self.plot_data[channel_name] = deque(old_data, maxlen=new_buffer_size)
+                for ch in self.channels.values():
+                    ch.data = deque(ch.data, maxlen=new_buffer_size)
             
             # Refresh plot display with throttling
             self.schedule_plot_update()
@@ -2416,10 +2442,8 @@ For technical support, refer to the README.md file."""
                         else:
                             # Use channel name or custom name if available
                             channel_name = self.x_axis_selection
-                            if channel_name in self.channel_custom_names and self.channel_custom_names[channel_name].strip():
-                                label = self.channel_custom_names[channel_name]
-                            else:
-                                label = channel_name
+                            ch = self.channels.get(channel_name)
+                            label = ch.label if ch else channel_name
                     
                     self.plot_widget.setLabel('bottom', label, color=CURRENT_THEME["plot_fg"])
             except Exception:
@@ -2511,11 +2535,11 @@ For technical support, refer to the README.md file."""
         """Update plot data structures with new channel data"""
         for channel_name, value in new_data.items():
             # Initialize channel if new
-            if channel_name not in self.plot_data:
+            if channel_name not in self.channels:
                 # A single malformed line can carry thousands of fields; each
                 # new channel costs a deque plus a row of six widgets, so cap
                 # it rather than letting the UI lock up.
-                if len(self.plot_data) >= self.MAX_CHANNELS:
+                if len(self.channels) >= self.MAX_CHANNELS:
                     if not self._channel_cap_reported:
                         self._channel_cap_reported = True
                         self.log_message(
@@ -2525,24 +2549,21 @@ For technical support, refer to the README.md file."""
                             "ERROR")
                     continue
 
-                self.plot_data[channel_name] = deque(maxlen=self.plot_max_points)
-                self.channel_visibility[channel_name] = True
-                
-                # Set default thickness and color
-                self.channel_thickness[channel_name] = CURRENT_THEME["default_line_width"]
-                color_index = len(self.channel_colors) % len(self.plot_colors)
-                self.channel_colors[channel_name] = self.plot_colors[color_index]
-                # Remember the palette slot so this channel keeps its hue
-                # position when the theme changes.
-                self.channel_color_index[channel_name] = color_index
-                self.channel_color_user[channel_name] = False
-                
-                # Lines only by default. A symbol turns the curve into a
-                # ScatterPlotItem, which rasterises one pixmap per point:
-                # 500 points x 5 channels x 30 fps is 75k symbol draws/s.
-                self.channel_dot_size[channel_name] = 0
-                self.channel_show_line[channel_name] = True
-                
+                color_index = len(self.channels) % len(self.plot_colors)
+                self.channels[channel_name] = Channel(
+                    name=channel_name,
+                    data=deque(maxlen=self.plot_max_points),
+                    color=self.plot_colors[color_index],
+                    # Remember the palette slot so this channel keeps its hue
+                    # position when the theme changes.
+                    color_index=color_index,
+                    thickness=CURRENT_THEME["default_line_width"],
+                    # Lines only by default. A symbol turns the curve into a
+                    # ScatterPlotItem, which rasterises one pixmap per point:
+                    # 500 points x 5 channels x 30 fps is 75k symbol draws/s.
+                    dot_size=0,
+                )
+
                 self.add_channel_control(channel_name)
                 
                 # Update x-axis dropdown with new channel
@@ -2552,15 +2573,17 @@ For technical support, refer to the README.md file."""
                 self._create_curve(channel_name)
             
             # Add data point using the provided sample number (same for all channels in this line)
-            self.plot_data[channel_name].append((sample_number, value))
+            self.channels[channel_name].data.append((sample_number, value))
         
         # Schedule throttled plot update instead of immediate update
         self.schedule_plot_update()
     
     def add_channel_control(self, channel_name: str):
-        """Add visibility control for a channel with thickness and color options"""
+        """Build the Plot tab row of controls for one channel"""
+        ch = self.channels[channel_name]
+
         # Clear only the "No channels detected" message if it's the first channel
-        if len(self.plot_data) == 1:
+        if len(self.channels) == 1:
             # Only destroy the "No channels detected" label
             widgets_to_remove = []
             for widget in self.channel_rows_frame.winfo_children():
@@ -2575,7 +2598,7 @@ For technical support, refer to the README.md file."""
         channel_control_frame.pack(fill=tk.X, padx=2, pady=2)
         
         # Channel visibility checkbox
-        var = tk.BooleanVar(value=True)
+        var = tk.BooleanVar(value=ch.visible)
         checkbox = ttk.Checkbutton(
             channel_control_frame,
             text=channel_name,
@@ -2594,7 +2617,7 @@ For technical support, refer to the README.md file."""
         
         # Line thickness control
         ttk.Label(channel_control_frame, text="Thickness:").pack(side=tk.LEFT, padx=(0, 2))
-        thickness_var = tk.StringVar(value=str(self.channel_thickness[channel_name]))
+        thickness_var = tk.StringVar(value=str(ch.thickness))
         thickness_spinbox = ttk.Spinbox(
             channel_control_frame,
             from_=1, to=10, width=3,
@@ -2618,7 +2641,7 @@ For technical support, refer to the README.md file."""
 
         # Dot size control
         ttk.Label(channel_control_frame, text="Dot Size:").pack(side=tk.LEFT, padx=(0, 2))
-        dot_size_var = tk.StringVar(value=str(self.channel_dot_size[channel_name]))
+        dot_size_var = tk.StringVar(value=str(ch.dot_size))
         dot_size_spinbox = ttk.Spinbox(
             channel_control_frame,
             from_=0, to=20, width=3,
@@ -2630,7 +2653,7 @@ For technical support, refer to the README.md file."""
         dot_size_spinbox.bind('<FocusOut>', lambda e: self.update_channel_dot_size(channel_name, dot_size_var.get()))
         
         # Show line toggle
-        line_var = tk.BooleanVar(value=self.channel_show_line[channel_name])
+        line_var = tk.BooleanVar(value=ch.show_line)
         line_checkbox = ttk.Checkbutton(
             channel_control_frame,
             text="Show Line",
@@ -2639,17 +2662,16 @@ For technical support, refer to the README.md file."""
         )
         line_checkbox.pack(side=tk.LEFT, padx=(0, 5))
         
-        # Store references
-        setattr(self, f"channel_var_{channel_name}", var)
-        setattr(self, f"name_var_{channel_name}", name_var)
-        setattr(self, f"thickness_var_{channel_name}", thickness_var)
-        setattr(self, f"dot_size_var_{channel_name}", dot_size_var)
-        setattr(self, f"line_var_{channel_name}", line_var)
-        setattr(self, f"color_btn_{channel_name}", color_btn)
-        
-        # Initialize custom name
-        self.channel_custom_names[channel_name] = channel_name
-        
+        # Keep the row's widgets on the Channel, so clearing self.channels
+        # releases them - the old per-channel setattr()s were never deleted.
+        ch.row = channel_control_frame
+        ch.visible_var = var
+        ch.name_var = name_var
+        ch.thickness_var = thickness_var
+        ch.dot_size_var = dot_size_var
+        ch.line_var = line_var
+        ch.color_btn = color_btn
+
         # Theme only the row just built. Restyling self.channel_frame here
         # walked every previously added row too, making the cost of adding N
         # channels O(N^2) - and this runs on the receive path.
@@ -2658,7 +2680,10 @@ For technical support, refer to the README.md file."""
     
     def toggle_channel_visibility(self, channel_name: str, visible: bool):
         """Toggle visibility of a plot channel"""
-        self.channel_visibility[channel_name] = visible
+        ch = self.channels.get(channel_name)
+        if ch is None:
+            return
+        ch.visible = visible
         
         self._rebuild_legend()
         
@@ -2701,8 +2726,8 @@ For technical support, refer to the README.md file."""
             
             # Build list of options: Sample Number + all channels
             options = ['Sample Number']
-            for channel_name in sorted(self.plot_data.keys()):
-                display_name = self.channel_custom_names.get(channel_name, channel_name)
+            for channel_name in sorted(self.channels):
+                display_name = self.channels[channel_name].label
                 options.append(display_name)
             
             # Update combobox values
@@ -2720,40 +2745,44 @@ For technical support, refer to the README.md file."""
         try:
             thickness = int(thickness_str)
             thickness = max(1, min(10, thickness))  # Clamp between 1 and 10
-            self.channel_thickness[channel_name] = thickness
+            self.channels[channel_name].thickness = thickness
             
             self._apply_channel_style(channel_name)
 
         except ValueError:
             # Reset to current value if invalid input
-            thickness_var = getattr(self, f"thickness_var_{channel_name}", None)
-            if thickness_var and channel_name in self.channel_thickness:
-                thickness_var.set(str(self.channel_thickness[channel_name]))
+            ch = self.channels.get(channel_name)
+            thickness_var = ch.thickness_var if ch else None
+            ch = self.channels.get(channel_name)
+            if thickness_var and ch:
+                thickness_var.set(str(ch.thickness))
     
     def update_channel_dot_size(self, channel_name: str, dot_size_str: str):
         """Update dot size for a channel"""
         try:
             dot_size = int(dot_size_str)
             dot_size = max(0, min(20, dot_size))  # Clamp between 0 and 20
-            self.channel_dot_size[channel_name] = dot_size
+            self.channels[channel_name].dot_size = dot_size
             
             self._apply_channel_style(channel_name)
 
         except ValueError:
             # Reset to current value if invalid input
-            dot_size_var = getattr(self, f"dot_size_var_{channel_name}", None)
-            if dot_size_var and channel_name in self.channel_dot_size:
-                dot_size_var.set(str(self.channel_dot_size[channel_name]))
+            ch = self.channels.get(channel_name)
+            dot_size_var = ch.dot_size_var if ch else None
+            ch = self.channels.get(channel_name)
+            if dot_size_var and ch:
+                dot_size_var.set(str(ch.dot_size))
     
     def toggle_channel_line(self, channel_name: str, show_line: bool):
         """Toggle line visibility for a channel"""
-        self.channel_show_line[channel_name] = show_line
+        self.channels[channel_name].show_line = show_line
         self._apply_channel_style(channel_name)
     
     def update_channel_name(self, channel_name: str, new_name: str):
         """Update custom display name for a channel"""
         if new_name.strip():
-            self.channel_custom_names[channel_name] = new_name.strip()
+            self.channels[channel_name].display_name = new_name.strip()
             
             # Update X-axis label if this channel is selected as X-axis and no custom label is set
             if (self.x_axis_selection == channel_name and not self.x_axis_custom_label.strip()):
@@ -2765,21 +2794,24 @@ For technical support, refer to the README.md file."""
             self._rebuild_legend()
         else:
             # Reset to original name if empty
-            name_var = getattr(self, f"name_var_{channel_name}", None)
-            if name_var and channel_name in self.channel_custom_names:
-                name_var.set(self.channel_custom_names[channel_name])
+            ch = self.channels.get(channel_name)
+            name_var = ch.name_var if ch else None
+            ch = self.channels.get(channel_name)
+            if name_var and ch:
+                name_var.set(ch.label)
     
     def choose_channel_color(self, channel_name: str):
         """Open color chooser dialog for a channel"""
-        current_color = self.channel_colors.get(channel_name)
-        if current_color is None:
+        ch = self.channels.get(channel_name)
+        if ch is None:
             return  # channel was cleared while its row was still on screen
+        current_color = ch.color
         color = colorchooser.askcolor(color=current_color, title=f"Choose color for {channel_name}")
         
         if color[1]:  # color[1] is the hex color string
-            self.channel_colors[channel_name] = color[1]
+            ch.color = color[1]
             # Hand-picked colours survive theme switches untouched
-            self.channel_color_user[channel_name] = True
+            ch.color_is_user = True
 
             # Update button appearance
             self.update_color_button_appearance(channel_name)
@@ -2788,12 +2820,13 @@ For technical support, refer to the README.md file."""
     
     def update_color_button_appearance(self, channel_name: str):
         """Update the color button appearance to show the selected color"""
-        color_btn = getattr(self, f"color_btn_{channel_name}", None)
+        ch = self.channels.get(channel_name)
+        color_btn = ch.color_btn if ch else None
         if color_btn:
             try:
                 # Set button background to match the line color, and pick a
                 # label colour that stays readable on top of it.
-                color = self.channel_colors[channel_name]
+                color = ch.color
                 color_btn.config(text="Color", background=color,
                                  foreground=contrast_fg_for(color),
                                  activebackground=color,
@@ -2831,47 +2864,46 @@ For technical support, refer to the README.md file."""
             # Resolve the x-axis channel once per frame, not per curve
             x_axis_channel = None
             if self.x_axis_selection != "Sample Number":
-                for channel_name, display_name in self.channel_custom_names.items():
-                    if display_name == self.x_axis_selection:
-                        x_axis_channel = channel_name
+                for name, ch in self.channels.items():
+                    if ch.label == self.x_axis_selection:
+                        x_axis_channel = name
                         break
-                if x_axis_channel is None and self.x_axis_selection in self.plot_data:
-                    x_axis_channel = self.x_axis_selection
 
             # Hoisted out of the per-curve loop: this used to be re-materialised
             # once for every channel, so N channels copied the same deque N
             # times per frame.
             x_tail = None
-            if x_axis_channel and x_axis_channel in self.plot_data:
-                x_tail = self._tail(self.plot_data[x_axis_channel])
+            if x_axis_channel and x_axis_channel in self.channels:
+                x_tail = self._tail(self.channels[x_axis_channel].data)
 
-            width = self.plot_width
-            for channel_name, curve in self.plot_curves.items():
-                visible = (channel_name in self.plot_data
-                           and self.channel_visibility.get(channel_name, True))
-                if not visible:
+            for ch in self.channels.values():
+                curve = ch.curve
+                if curve is None:
+                    continue
+
+                if not ch.visible:
                     # setData() is not free - it reconfigures the item, drops
                     # the cached bounds and triggers an auto-range recompute -
                     # so only do it on the transition, not every frame.
-                    if self._curve_has_data.get(channel_name, True):
+                    if ch.has_data:
                         curve.setData([], [])
-                        self._curve_has_data[channel_name] = False
+                        ch.has_data = False
                     continue
 
-                y_tail = self._tail(self.plot_data[channel_name])
+                y_tail = self._tail(ch.data)
                 if not y_tail:
-                    if self._curve_has_data.get(channel_name, True):
+                    if ch.has_data:
                         curve.setData([], [])
-                        self._curve_has_data[channel_name] = False
+                        ch.has_data = False
                     continue
 
                 if x_tail is not None:
                     # Pair the two channels by position from the newest end
                     n = min(len(y_tail), len(x_tail))
                     if n == 0:
-                        if self._curve_has_data.get(channel_name, True):
+                        if ch.has_data:
                             curve.setData([], [])
-                            self._curve_has_data[channel_name] = False
+                            ch.has_data = False
                         continue
                     x_data = [p[1] for p in x_tail[-n:]]
                     y_data = [p[1] for p in y_tail[-n:]]
@@ -2880,7 +2912,7 @@ For technical support, refer to the README.md file."""
                     x_data, y_data = zip(*y_tail)
 
                 curve.setData(x_data, y_data)
-                self._curve_has_data[channel_name] = True
+                ch.has_data = True
 
         except Exception as e:
             # Report once. This handler previously discarded every plotting
@@ -2936,7 +2968,7 @@ For technical support, refer to the README.md file."""
                         def closeEvent(self, event):
                             self.parent_gui.plot_window = None
                             self.parent_gui.plot_widget = None
-                            self.parent_gui.plot_curves.clear()
+                            self.parent_gui._drop_curves()
                             self.parent_gui.plot_legend = None
                             self.parent_gui.plot_status_label.config(text="Click 'Show Plot Window' to display real-time plots")
                             event.accept()
@@ -2976,9 +3008,7 @@ For technical support, refer to the README.md file."""
                 self.plot_window.setCentralWidget(self.plot_widget)
                 
                 # Recreate all plot curves
-                self.plot_curves = {}
-                self._curve_has_data.clear()
-                for channel_name in self.plot_data:
+                for channel_name in self.channels:
                     self._create_curve(channel_name)
 
                 # Update with current data
@@ -2995,7 +3025,7 @@ For technical support, refer to the README.md file."""
             self.plot_window = None
             self.plot_widget = None
             self.plot_legend = None
-            self.plot_curves.clear()
+            self._drop_curves()
             self.plot_status_label.config(text=f"Error creating plot window: {str(e)}")
 
     def clear_plot_data(self):
@@ -3003,35 +3033,10 @@ For technical support, refer to the README.md file."""
 
         Axis labels, the plot title and the buffer settings are preserved.
         """
-        channel_names = list(self.plot_data)
-
-        # Clear only the actual plot data
-        self.plot_data.clear()
-        self.plot_curves.clear()
-        self._curve_has_data.clear()
-
-        # Clear channel-related data
-        self.channel_visibility.clear()
-        self.channel_thickness.clear()
-        self.channel_colors.clear()
-        self.channel_custom_names.clear()
-        self.channel_dot_size.clear()
-        self.channel_show_line.clear()
-        self.channel_color_index.clear()
-        self.channel_color_user.clear()
-
-        # add_channel_control() hangs six attributes off self per channel. The
-        # widgets are destroyed below, but without this the tk.Variable objects
-        # stay referenced - and each one holds a Tcl interpreter global that
-        # only __del__ would reap - so every clear cycle leaked five of them
-        # per channel plus a dangling reference to a destroyed Button.
-        for channel_name in channel_names:
-            for prefix in ("channel_var_", "name_var_", "thickness_var_",
-                           "dot_size_var_", "line_var_", "color_btn_"):
-                try:
-                    delattr(self, f"{prefix}{channel_name}")
-                except AttributeError:
-                    pass
+        # One structure to clear, so it cannot be partially done - and the Tk
+        # variables each Channel owns go with it. That is what used to leak:
+        # the six dynamically-named attributes per channel were never released.
+        self.channels.clear()
 
         # Reset global sample counter
         self.global_sample_counter = 0
@@ -3074,15 +3079,15 @@ For technical support, refer to the README.md file."""
     def clear_buffer_only(self):
         """Clear only plot data buffer, preserve all channels and settings"""
         # Keep one sample for each channel to preserve channel structure
-        for channel_name in list(self.plot_data.keys()):
-            if len(self.plot_data[channel_name]) > 0:
+        for ch in self.channels.values():
+            if ch.data:
                 # Keep only the last sample
-                last_value = self.plot_data[channel_name][-1]
-                self.plot_data[channel_name].clear()
-                self.plot_data[channel_name].append(last_value)
+                last_value = ch.data[-1]
+                ch.data.clear()
+                ch.data.append(last_value)
         
         # Reset global sample counter but keep it at 1 if we have data
-        if self.plot_data:
+        if self.channels:
             self.global_sample_counter = 1
         else:
             self.global_sample_counter = 0
