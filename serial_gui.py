@@ -285,7 +285,15 @@ class ToolTip:
         if self.tooltip_window or not self.text:
             return
         
-        x, y, _, _ = self.widget.bbox("insert") if hasattr(self.widget, 'bbox') else (0, 0, 0, 0)
+        # hasattr(widget, 'bbox') is useless as a guard: tkinter.Misc aliases
+        # bbox to grid_bbox, so every widget has one. On a Button that means
+        # 'grid bbox <w> insert', which raises TclError inside this binding.
+        # Only text-entry widgets accept an index.
+        x = y = 0
+        try:
+            x, y, _, _ = self.widget.bbox("insert")
+        except (tk.TclError, TypeError, ValueError):
+            pass
         x += self.widget.winfo_rootx() + 20
         y += self.widget.winfo_rooty() + 20
         
@@ -594,19 +602,46 @@ def contrast_fg_for(color: str) -> str:
 
 
 class SerialGUI:
+    # -- Tunables ---------------------------------------------------------
+    # Channel rows grow the scroll canvas up to this height; beyond it they
+    # scroll instead of pushing the rest of the Plot tab off screen.
+    CHANNEL_LIST_MAX_HEIGHT = 200
+    # Discard the accumulated receive buffer if no line ending shows up within
+    # this many bytes, so a misconfigured link cannot exhaust memory.
+    MAX_SERIAL_BUFFER = 1 << 20  # 1 MiB
+    # Upper bound on channels created from parsed data. One malformed line with
+    # thousands of fields would otherwise build thousands of widget rows.
+    MAX_CHANNELS = 64
+    # Lines retained in the serial monitor. Tk's Text widget degrades badly
+    # once it holds hundreds of thousands of lines.
+    MAX_MONITOR_LINES = 5000
+
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("USAFA ASTRO - KestrelSAT Ground Control Station")
         self.root.geometry("800x780")
         self.root.resizable(True, True)
         
+        # Shutdown state. Timer ids are kept so on_closing() can cancel them
+        # before destroying the root.
+        self._closing = False
+        self._sps_timer = None
+        self._filesize_timer = None
+        self._plot_timer = None
+
         # Serial connection
         self.serial_connection: Optional[serial.Serial] = None
         self.is_connected = False
         self.read_thread: Optional[threading.Thread] = None
+        # Replaced with a fresh Event on every connect, so a worker that
+        # outlives its join timeout can never be revived.
         self.stop_reading = threading.Event()
         self.serial_buffer = ""  # Buffer for accumulating partial serial data
-        
+
+        # One-shot flags so recurring failures are reported once, not per line
+        self._parse_error_reported = False
+        self._channel_cap_reported = False
+
         # Test mode for simulation
         self.test_mode = False
         self.test_counter = 0
@@ -797,7 +832,9 @@ class SerialGUI:
             self.last_sample_time = current_time
         
         # Schedule next update
-        self.root.after(100, self.update_sps_display)  # Update every 100ms for smoother display
+        # The reading only changes once a second, so there is nothing to gain
+        # from waking 10x more often than that.
+        self._sps_timer = self.root.after(1000, self.update_sps_display)
 
     def create_top_frame(self):
         """Create top frame with status and logging controls"""
@@ -1199,7 +1236,9 @@ class SerialGUI:
                 self.first_line_received = False
                 
                 # Start test mode thread
-                self.stop_reading.clear()
+                # A fresh Event per connection: clearing the shared one could
+                # revive a previous worker that outlived its join timeout.
+                self.stop_reading = threading.Event()
                 self.read_thread = threading.Thread(target=self.test_mode_loop, daemon=True)
                 self.read_thread.start()
                 
@@ -1244,7 +1283,8 @@ class SerialGUI:
             self.first_line_received = False
             
             # Start reading thread
-            self.stop_reading.clear()
+            # A fresh Event per connection - see the test-mode path above.
+            self.stop_reading = threading.Event()
             self.read_thread = threading.Thread(target=self.read_serial_data, daemon=True)
             self.read_thread.start()
             
@@ -1265,14 +1305,30 @@ class SerialGUI:
         self.stop_reading.set()
         self.serial_buffer = ""  # Clear buffer on disconnect
         self.first_line_received = False  # Reset first line flag
-        
-        if self.serial_connection:
-            self.serial_connection.close()
-            self.serial_connection = None
-        
+
+        # Stop the worker before closing the port, not after: closing a port
+        # the reader is still blocked inside is undefined behaviour.
         if self.read_thread:
-            self.read_thread.join(timeout=1.0)
-        
+            self.read_thread.join(timeout=2.0)
+            if self.read_thread.is_alive():
+                # Do not reuse a thread we could not stop. connect() creates a
+                # fresh Event, so the stale worker can no longer be revived by
+                # a later stop_reading.clear().
+                print("Warning: serial reader thread did not stop within 2s")
+            self.read_thread = None
+
+        # close() routinely raises when the adapter has been unplugged, which
+        # is the most common reason we get here. Swallowing it would leave the
+        # UI stuck showing "Disconnect" and, via on_closing(), make the window
+        # impossible to close.
+        if self.serial_connection:
+            try:
+                self.serial_connection.close()
+            except Exception as e:
+                print(f"Error closing serial port: {e}")
+            finally:
+                self.serial_connection = None
+
         self.connect_btn.config(text="Connect")
         self.send_btn.config(state=tk.DISABLED)
         self.status_var.set("Disconnected")
@@ -1286,15 +1342,26 @@ class SerialGUI:
     
     def read_serial_data(self):
         """Read data from serial port in a separate thread"""
-        while not self.stop_reading.is_set() and self.is_connected:
+        # Capture the Event and the port once. Re-reading self.serial_connection
+        # mid-iteration races disconnect(), which sets it to None.
+        stop_event = self.stop_reading
+        conn = self.serial_connection
+
+        while not stop_event.is_set() and self.is_connected:
             try:
-                if self.serial_connection and self.serial_connection.in_waiting > 0:
-                    data = self.serial_connection.read(self.serial_connection.in_waiting)
+                pending = conn.in_waiting  # one syscall, not two
+                if pending > 0:
+                    data = conn.read(pending)
                     if data:
                         self.root.after(0, self.display_received_data, data)
                 time.sleep(0.01)  # Small delay to prevent excessive CPU usage
             except serial.SerialException:
                 self.root.after(0, self.handle_connection_error)
+                break
+            except Exception:
+                # Includes the TclError/RuntimeError raised by after() once the
+                # interpreter is gone. Without this the daemon thread would die
+                # with a traceback to a stderr nobody sees in a windowed build.
                 break
     
     def handle_connection_error(self):
@@ -1314,27 +1381,44 @@ class SerialGUI:
                 # Decode and add to buffer
                 new_text = data.decode('utf-8', errors='replace')
                 self.serial_buffer += new_text
-                
-                # Process complete lines
-                while '\n' in self.serial_buffer:
-                    line, self.serial_buffer = self.serial_buffer.split('\n', 1)
+
+                # A device that never sends a newline (wrong baud rate, binary
+                # data, or CR-only line endings) would otherwise grow this
+                # string without bound, with an O(n) copy on every chunk.
+                if len(self.serial_buffer) > self.MAX_SERIAL_BUFFER:
+                    self.serial_buffer = ""
+                    self.log_message(
+                        f"No line ending seen in {self.MAX_SERIAL_BUFFER} bytes - buffer discarded. "
+                        "Check the baud rate and that the device terminates lines with \\n.",
+                        "ERROR")
+                    return
+
+                # Split once rather than repeatedly slicing the buffer: the
+                # previous 'while \n in buffer: split(\n, 1)' loop copied the
+                # remaining buffer once per line, making a chunk of k lines
+                # O(k * len(chunk)).
+                parts = self.serial_buffer.split('\n')
+                self.serial_buffer = parts.pop()  # trailing partial line
+
+                for line in parts:
                     line = line.rstrip('\r')  # Remove carriage return if present
-                    
+
                     if line:  # Only process non-empty lines
-                        self.log_message(line, "RECEIVED")
-                        
-                        # Count samples for SPS calculation
-                        self.samples_received += 1
-                        
-                        # Parse data for plotting
-                        self.parse_plot_data(line)
-                        
-                        # Clear plot data after first line to discard partial data
+                        # The first line after connecting is usually a partial
+                        # fragment left in the device's buffer, so drop it
+                        # rather than parsing it and clearing up afterwards.
                         if not self.first_line_received:
                             self.first_line_received = True
-                            # Clear plot data after a short delay to ensure parsing is complete
-                            self.root.after(10, self.clear_plot_data)
-            
+                            continue
+
+                        self.log_message(line, "RECEIVED")
+
+                        # Count samples for SPS calculation
+                        self.samples_received += 1
+
+                        # Parse data for plotting
+                        self.parse_plot_data(line)
+
         except Exception as e:
             self.log_message(f"Error displaying data: {str(e)}", "ERROR")
     
@@ -1381,7 +1465,8 @@ class SerialGUI:
     
     def test_mode_loop(self):
         """Simulate device responses in test mode"""
-        while not self.stop_reading.is_set() and self.is_connected and self.test_mode:
+        stop_event = self.stop_reading
+        while not stop_event.is_set() and self.is_connected and self.test_mode:
             try:
                 # Send periodic sensor data every 3 seconds
                 if self.test_counter % 300 == 0:  # 300 * 0.01 = 3 seconds
@@ -1402,7 +1487,7 @@ class SerialGUI:
                     plot_data = f"Temp:{temp_val:.2f},Sine:{sine_val:.2f},Noise:{noise_val:.2f}"
                     
                     # Send as bytes to simulate real serial data
-                    data_bytes = (plot_data + '\\n').encode('utf-8')
+                    data_bytes = (plot_data + '\n').encode('utf-8')
                     self.root.after(0, self.display_received_data, data_bytes)
                 
                 # Send system status every 10 seconds
@@ -1420,7 +1505,14 @@ class SerialGUI:
                 time.sleep(0.01)
                 
             except Exception as e:
-                self.root.after(0, lambda: self.log_message(f"Test mode error: {str(e)}", "ERROR"))
+                # Report through after() too, but never let a second failure
+                # (e.g. the interpreter is already gone) escape and skip the
+                # break below.
+                try:
+                    self.root.after(
+                        0, lambda msg=str(e): self.log_message(f"Test mode error: {msg}", "ERROR"))
+                except Exception:
+                    pass
                 break
     
     def log_message(self, message: str, msg_type: str = ""):
@@ -1572,7 +1664,7 @@ class SerialGUI:
             self.log_status_var.set("Not logging")
         
         # Schedule next update
-        self.root.after(1000, self.update_file_size_display)
+        self._filesize_timer = self.root.after(1000, self.update_file_size_display)
     
     def load_settings(self) -> Dict[str, Any]:
         """Load settings from file"""
@@ -1634,11 +1726,51 @@ class SerialGUI:
     
     def on_closing(self):
         """Handle window closing"""
+        # Reachable from WM_DELETE_WINDOW, File > Quit and Ctrl+Q, so guard
+        # against a second pass calling destroy() on an already-dead root.
+        if self._closing:
+            return
+        self._closing = True
+
+        # Cancel the recurring timers first. stop_logging() and disconnect()
+        # below both call log_message(), and handle_connection_error() can pop
+        # a modal dialog - all of which run a nested event loop in which these
+        # would otherwise keep firing against half-torn-down state.
+        for attr in ('_sps_timer', '_filesize_timer', '_plot_timer'):
+            timer_id = getattr(self, attr, None)
+            if timer_id is not None:
+                try:
+                    self.root.after_cancel(timer_id)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
         if self.logging_active:
             self.stop_logging()
         if self.is_connected:
             self.disconnect()
+
+        # Tear the Qt side down before the Tk root. Leaving a live QMainWindow
+        # referenced from self.plot_widget/plot_curves while the interpreter
+        # shuts down is a known PyQt5 segfault-on-exit ordering hazard.
+        self._close_plot_window()
+
         self.root.destroy()
+
+    def _close_plot_window(self):
+        """Close and release the pop-out plot window, if one is open"""
+        if not PYQTGRAPH_AVAILABLE:
+            return
+        try:
+            if self.plot_window is not None:
+                self.plot_window.close()
+        except Exception:
+            pass
+        finally:
+            self.plot_window = None
+            self.plot_widget = None
+            self.plot_legend = None
+            self.plot_curves.clear()
     
     def show_preferences(self):
         """Show the preferences dialog"""
@@ -2000,10 +2132,6 @@ For technical support, refer to the README.md file."""
 
         ttk.Label(self.channel_rows_frame, text="No channels detected").pack()
 
-    # Channel rows grow the canvas up to this height; beyond it they scroll
-    # instead of pushing the rest of the tab off screen.
-    CHANNEL_LIST_MAX_HEIGHT = 200
-
     def _build_channel_scroll_area(self):
         """Build the scrollable container that holds per-channel plot rows"""
         scroll_container = ttk.Frame(self.channel_frame)
@@ -2070,7 +2198,7 @@ For technical support, refer to the README.md file."""
         elif delim_type == "space":
             self.delimiter = ' '
         elif delim_type == "tab":
-            self.delimiter = '\\t'
+            self.delimiter = '\t'
         elif delim_type == "other":
             self.delimiter = self.custom_delim_entry.get() or ','
     
@@ -2232,14 +2360,32 @@ For technical support, refer to the README.md file."""
                 self.update_plot_channels(parsed_channels, self.global_sample_counter)
                 
         except Exception as e:
-            # Silently ignore parsing errors to avoid spam
-            pass
-    
+            # Report once rather than per line, so a broken parser is visible
+            # without flooding the monitor.
+            if not self._parse_error_reported:
+                self._parse_error_reported = True
+                self.log_message(
+                    f"Error parsing data for plotting: {e}. Check the delimiter setting. "
+                    "Further parse errors will not be reported.", "ERROR")
+
     def update_plot_channels(self, new_data: Dict[str, float], sample_number: int):
         """Update plot data structures with new channel data"""
         for channel_name, value in new_data.items():
             # Initialize channel if new
             if channel_name not in self.plot_data:
+                # A single malformed line can carry thousands of fields; each
+                # new channel costs a deque plus a row of six widgets, so cap
+                # it rather than letting the UI lock up.
+                if len(self.plot_data) >= self.MAX_CHANNELS:
+                    if not self._channel_cap_reported:
+                        self._channel_cap_reported = True
+                        self.log_message(
+                            f"Channel limit of {self.MAX_CHANNELS} reached - ignoring "
+                            f"'{channel_name}' and any further new channels. "
+                            "Check the delimiter setting, then use Clear Plot Data to reset.",
+                            "ERROR")
+                    continue
+
                 self.plot_data[channel_name] = deque(maxlen=self.plot_max_points)
                 self.channel_visibility[channel_name] = True
                 
@@ -2434,7 +2580,7 @@ For technical support, refer to the README.md file."""
             # Schedule an update for later
             self.pending_plot_update = True
             delay_ms = int((self.plot_update_interval - (current_time - self.last_plot_update)) * 1000)
-            self.root.after(delay_ms, self.execute_pending_plot_update)
+            self._plot_timer = self.root.after(delay_ms, self.execute_pending_plot_update)
     
     def execute_pending_plot_update(self):
         """Execute a pending plot update"""
@@ -2485,7 +2631,7 @@ For technical support, refer to the README.md file."""
         except ValueError:
             # Reset to current value if invalid input
             thickness_var = getattr(self, f"thickness_var_{channel_name}", None)
-            if thickness_var:
+            if thickness_var and channel_name in self.channel_thickness:
                 thickness_var.set(str(self.channel_thickness[channel_name]))
     
     def update_channel_dot_size(self, channel_name: str, dot_size_str: str):
@@ -2513,7 +2659,7 @@ For technical support, refer to the README.md file."""
         except ValueError:
             # Reset to current value if invalid input
             dot_size_var = getattr(self, f"dot_size_var_{channel_name}", None)
-            if dot_size_var:
+            if dot_size_var and channel_name in self.channel_dot_size:
                 dot_size_var.set(str(self.channel_dot_size[channel_name]))
     
     def toggle_channel_line(self, channel_name: str, show_line: bool):
@@ -2565,12 +2711,14 @@ For technical support, refer to the README.md file."""
         else:
             # Reset to original name if empty
             name_var = getattr(self, f"name_var_{channel_name}", None)
-            if name_var:
+            if name_var and channel_name in self.channel_custom_names:
                 name_var.set(self.channel_custom_names[channel_name])
     
     def choose_channel_color(self, channel_name: str):
         """Open color chooser dialog for a channel"""
-        current_color = self.channel_colors[channel_name]
+        current_color = self.channel_colors.get(channel_name)
+        if current_color is None:
+            return  # channel was cleared while its row was still on screen
         color = colorchooser.askcolor(color=current_color, title=f"Choose color for {channel_name}")
         
         if color[1]:  # color[1] is the hex color string
@@ -2825,14 +2973,26 @@ For technical support, refer to the README.md file."""
             self.plot_status_label.config(text="Plot window is open and updating in real-time")
             
         except Exception as e:
+            # Roll back, otherwise plot_window stays non-None with a None
+            # plot_widget and every later click skips the init block above and
+            # shows a permanently empty window.
+            self.plot_window = None
+            self.plot_widget = None
+            self.plot_legend = None
+            self.plot_curves.clear()
             self.plot_status_label.config(text=f"Error creating plot window: {str(e)}")
-    
+
     def clear_plot_data(self):
-        """Clear plot data and buffer only, preserve all settings and UI"""
+        """Discard all channels: their data, per-channel settings, and UI rows.
+
+        Axis labels, the plot title and the buffer settings are preserved.
+        """
+        channel_names = list(self.plot_data)
+
         # Clear only the actual plot data
         self.plot_data.clear()
         self.plot_curves.clear()
-        
+
         # Clear channel-related data
         self.channel_visibility.clear()
         self.channel_thickness.clear()
@@ -2843,8 +3003,23 @@ For technical support, refer to the README.md file."""
         self.channel_color_index.clear()
         self.channel_color_user.clear()
 
+        # add_channel_control() hangs six attributes off self per channel. The
+        # widgets are destroyed below, but without this the tk.Variable objects
+        # stay referenced - and each one holds a Tcl interpreter global that
+        # only __del__ would reap - so every clear cycle leaked five of them
+        # per channel plus a dangling reference to a destroyed Button.
+        for channel_name in channel_names:
+            for prefix in ("channel_var_", "name_var_", "thickness_var_",
+                           "dot_size_var_", "line_var_", "color_btn_"):
+                try:
+                    delattr(self, f"{prefix}{channel_name}")
+                except AttributeError:
+                    pass
+
         # Reset global sample counter
         self.global_sample_counter = 0
+        self._channel_cap_reported = False
+        self._parse_error_reported = False
         
         # Clear the channel rows. The Y-axis label frame lives outside the
         # scrollable channel_rows_frame (it's a sibling, not a child), so it
