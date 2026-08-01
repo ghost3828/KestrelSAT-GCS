@@ -3,5 +3,6 @@
   "baud_rate": 115200,
   "data_bits": 8,
   "parity": "None",
-  "stop_bits": 1.0
+  "stop_bits": 1.0,
+  "theme": "dark"
 }
