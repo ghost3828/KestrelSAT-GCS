@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 import tkinter as tk
-import serial_gui as sg
+import kestrelsat.app as sg
 
 print("PYQTGRAPH_AVAILABLE =", sg.PYQTGRAPH_AVAILABLE)
 
@@ -19,7 +19,7 @@ root = tk.Tk()
 app = sg.SerialGUI(root)
 root.update()
 assert app.theme_name == "dark", app.theme_name
-assert sg.CURRENT_THEME is sg.THEMES["dark"]
+assert sg.themes.CURRENT is sg.THEMES["dark"]
 print("default theme:", app.theme_name)
 
 # some log traffic so the monitor tags have content to recolour
@@ -44,7 +44,7 @@ for name in sg.THEME_ORDER:
     app.on_theme_selected()
     root.update()
     c = sg.THEMES[name]
-    assert sg.CURRENT_THEME is c
+    assert sg.themes.CURRENT is c
     assert root.cget("bg") == c["bg"], (root.cget("bg"), c["bg"])
     assert app.received_text.cget("bg") == c["log_bg"]
     assert app.received_text.tag_cget("ERROR", "foreground") == c["log_error"]
@@ -61,7 +61,7 @@ for name in sg.THEME_ORDER:
 # connection indicator uses the ok colours
 app.update_status_indicator(True)
 root.update()
-assert app.status_canvas.itemcget(app.status_circle, "fill") == sg.CURRENT_THEME["ok"]
+assert app.status_canvas.itemcget(app.status_circle, "fill") == sg.themes.CURRENT["ok"]
 app.update_status_indicator(False)
 
 # dialogs must build and be themed
@@ -72,7 +72,7 @@ for opener, kwargs in ((app.show_preferences, {}), (app.show_serial_config, {}),
     tops = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)]
     assert tops, "no Toplevel created by %s" % opener.__name__
     dlg = tops[-1]
-    assert dlg.cget("bg") == sg.CURRENT_THEME["bg"], (opener.__name__, dlg.cget("bg"))
+    assert dlg.cget("bg") == sg.themes.CURRENT["bg"], (opener.__name__, dlg.cget("bg"))
     dlg.grab_release()
     dlg.destroy()
     root.update()
@@ -93,10 +93,10 @@ print("clear_plot_data ok")
 
 # menu colours
 menubar = root.nametowidget(root.cget("menu"))
-assert str(menubar.cget("bg")) == sg.CURRENT_THEME["surface"], menubar.cget("bg")
-assert str(menubar.cget("activebackground")) == sg.CURRENT_THEME["accent"]
+assert str(menubar.cget("bg")) == sg.themes.CURRENT["surface"], menubar.cget("bg")
+assert str(menubar.cget("activebackground")) == sg.themes.CURRENT["accent"]
 for sub in menubar.winfo_children():
-    assert str(sub.cget("bg")) == sg.CURRENT_THEME["surface"], (sub, sub.cget("bg"))
+    assert str(sub.cget("bg")) == sg.themes.CURRENT["surface"], (sub, sub.cget("bg"))
 print("menu ok (%d cascades)" % len(menubar.winfo_children()))
 
 app.on_closing()

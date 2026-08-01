@@ -148,8 +148,8 @@ to be bundled.
 3. **Connection Lost**: Verify physical connection and device power
 4. **Garbled Text**: Check baud rate and other serial parameters match your device
 5. **Nothing plots**: Confirm the delimiter matches your data, and that each line is a
-   complete sample. The plot is cleared once after the first line arrives, since that line
-   is often a partial fragment left in the device's buffer.
+   complete sample. The first line after connecting is discarded, since it is usually a
+   partial fragment left in the device's buffer.
 6. **"PyQtGraph not available"**: Install the plotting dependencies with
    `pip install pyqtgraph PyQt5`
 
@@ -162,15 +162,26 @@ to be bundled.
 ## File Structure
 
 ```
-serial_gui.py              # Main application file
-check_ports.py             # Standalone serial port lister
-requirements.txt           # Python dependencies
-build_exe.bat              # Windows executable build script
-KestrelSAT_GCS_v1.spec     # PyInstaller spec for the current build
-README.md                  # This file
-serial_gui_settings.json   # Auto-generated settings file (created after first use)
-logs/                      # Auto-generated default folder for log files
+serial_gui.py                  # Entry point
+kestrelsat/
+    app.py                     # SerialGUI: window, tabs, dialogs, serial I/O, plotting
+    themes.py                  # Theme palettes (imports nothing else)
+    theming.py                 # ThemeManager: applies a theme to the widget tree
+    channels.py                # Channel record
+    widgets.py                 # ToolTip
+tests/                         # See tests/README.md
+check_ports.py                 # Standalone serial port lister
+requirements.txt               # Python dependencies
+build_exe.bat                  # Windows executable build script
+KestrelSAT_GCS_v1.spec         # PyInstaller spec for the current build
+serial_gui_settings.example.json  # Example settings file
+README.md                      # This file
+serial_gui_settings.json       # Auto-generated settings (created after first use)
+logs/                          # Auto-generated default folder for log files
 ```
+
+`serial_gui.py` stays the entry point, so the PyInstaller spec needs no changes
+when the package is reorganised.
 
 Settings and logs are written relative to the working directory the app was launched from.
 
@@ -182,6 +193,15 @@ Settings and logs are written relative to the working directory the app was laun
 - Plot redraws are throttled to roughly 30 FPS regardless of incoming sample rate
 - JSON-based settings storage for user preferences
 - Error handling for common serial communication issues
+
+## Tests
+
+```bash
+python tests/run_all.py
+```
+
+On Linux these need a display: `QT_QPA_PLATFORM=offscreen xvfb-run -a python tests/run_all.py`.
+See `tests/README.md` for what each suite covers.
 
 ## License
 

@@ -8,7 +8,7 @@ import re
 import sys
 
 SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "serial_gui.py")
+                   "kestrelsat", "themes.py")
 HEX = re.compile(r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")
 
 mod = ast.parse(open(SRC).read())

@@ -7,7 +7,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import tkinter as tk
-import serial_gui as sg
+import kestrelsat.app as sg
 
 assert sg.PYQTGRAPH_AVAILABLE, "pyqtgraph must be importable for this test"
 import pyqtgraph as pg
