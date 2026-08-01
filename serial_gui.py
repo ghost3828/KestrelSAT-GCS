@@ -13,74 +13,24 @@ except ImportError:
     exit(1)
 try:
     import pyqtgraph as pg
-    from PyQt5 import QtWidgets, QtCore
+    from PyQt5 import QtWidgets
     # NOTE: background/foreground are set by ThemeManager once settings are loaded.
     PYQTGRAPH_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: PyQtGraph not available: {e}")
     print("Plotting functionality will be disabled.")
+    print("Install with: pip install pyqtgraph PyQt5")
     PYQTGRAPH_AVAILABLE = False
-    # Create dummy classes to prevent errors
-    class DummyQtWidgets:
-        class QApplication:
-            @staticmethod
-            def instance():
-                return None
-            def __init__(self, *args):
-                pass
-        class QMainWindow:
-            def __init__(self):
-                pass
-            def setWindowTitle(self, title):
-                pass
-            def setGeometry(self, *args):
-                pass
-            def setCentralWidget(self, widget):
-                pass
-            def show(self):
-                pass
-            def raise_(self):
-                pass
-    
-    class DummyPG:
-        class PlotWidget:
-            def __init__(self, *args, **kwargs):
-                pass
-            def setLabel(self, *args):
-                pass
-            def showGrid(self, *args):
-                pass
-            def setBackground(self, *args):
-                pass
-            def plot(self, *args, **kwargs):
-                return DummyCurve()
-            def clear(self):
-                pass
-            def getPlotItem(self):
-                return DummyPlotItem()
-        
-        class LegendItem:
-            def __init__(self, *args, **kwargs):
-                pass
-            def setParentItem(self, *args):
-                pass
-            def addItem(self, *args):
-                pass
-        
-        @staticmethod
-        def mkPen(*args, **kwargs):
-            return "dummy_pen"
-    
-    class DummyPlotItem:
-        def addLegend(self):
-            return DummyPG.LegendItem()
-    
-    class DummyCurve:
-        def setData(self, *args):
-            pass
-    
-    QtWidgets = DummyQtWidgets()
-    pg = DummyPG()
+    # No stand-in objects: every site that touches pg or QtWidgets is already
+    # behind a PYQTGRAPH_AVAILABLE check, and show_plot_window() returns early,
+    # so plot_widget stays None and the plotting paths are never entered.
+    # The previous dummy classes were unreachable and, worse, silently
+    # incomplete - they lacked setPen, setSymbol, getAxis, setConfigOption,
+    # mkBrush and others that the code calls, and their setLabel/showGrid
+    # signatures would have raised TypeError on the keyword calls we make.
+    pg = None
+    QtWidgets = None
+
 import threading
 import queue
 import time
@@ -89,7 +39,6 @@ import datetime
 import json
 import os
 import random
-import re
 from collections import deque
 from typing import Optional, Dict, Any, Callable, List
 
@@ -622,6 +571,8 @@ class SerialGUI:
     RX_PUMP_INTERVAL_MS = 20
     # Chunks drained per pump, so one burst cannot monopolise the event loop.
     RX_PUMP_BUDGET = 200
+    # Legend placement, negative offset anchors it to the top right.
+    LEGEND_OFFSET = (-70, 30)
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -676,7 +627,6 @@ class SerialGUI:
         self.plot_max_points = 1000
         self.plot_width = 500  # Number of samples to display in plot
         self.delimiter = ','
-        self.custom_delimiter = ''
         self.channel_visibility = {}
         self.plot_curves = {}
         self.plot_paused = False  # Flag to pause/resume plotting
@@ -979,21 +929,94 @@ class SerialGUI:
             idx = self.channel_color_index.get(channel_name, 0) % len(palette)
             self.channel_colors[channel_name] = palette[idx]
 
-    def _repen_all_curves(self):
-        """Push the current channel colours onto live pyqtgraph curves"""
+    # -- curve styling ----------------------------------------------------
+    #
+    # Every per-channel appearance change funnels through these two helpers.
+    # They previously existed as seven near-identical inline blocks that had
+    # drifted apart: three different default line widths, and a legend rebuild
+    # that filtered by visibility in one place but not the other.
+
+    def _channel_style(self, channel_name: str):
+        """pen/symbol keyword arguments for a channel's current settings."""
+        color = self.channel_colors.get(channel_name, self.plot_colors[0])
+        thickness = self.channel_thickness.get(
+            channel_name, CURRENT_THEME["default_line_width"])
+        dot_size = self.channel_dot_size.get(channel_name, 0)
+        show_line = self.channel_show_line.get(channel_name, True)
+        return {
+            'pen': pg.mkPen(color=color, width=thickness) if show_line else None,
+            'symbol': 'o' if dot_size > 0 else None,
+            'symbolSize': dot_size if dot_size > 0 else 1,
+            'symbolBrush': color,
+        }
+
+    def _create_curve(self, channel_name: str):
+        """Create the plot curve for a channel and add it to the legend."""
+        if not PYQTGRAPH_AVAILABLE or self.plot_widget is None:
+            return
+        try:
+            style = self._channel_style(channel_name)
+            curve = self.plot_widget.plot(name=channel_name, **style)
+            self.plot_curves[channel_name] = curve
+            self._curve_has_data[channel_name] = False
+            if self.plot_legend is not None:
+                display_name = self.channel_custom_names.get(channel_name, channel_name)
+                self.plot_legend.addItem(curve, display_name)
+        except Exception:
+            pass
+
+    def _apply_channel_style(self, channel_name: str):
+        """Re-apply a channel's pen and symbol to its existing curve."""
         if not PYQTGRAPH_AVAILABLE:
             return
-        for channel_name, curve in self.plot_curves.items():
-            try:
-                color = self.channel_colors[channel_name]
-                if self.channel_show_line.get(channel_name, True):
-                    curve.setPen(pg.mkPen(
-                        color=color,
-                        width=self.channel_thickness.get(channel_name, 2)))
-                if self.channel_dot_size.get(channel_name, 4) > 0:
-                    curve.setSymbolBrush(color)
-            except Exception:
-                pass
+        curve = self.plot_curves.get(channel_name)
+        if curve is None:
+            return
+        try:
+            style = self._channel_style(channel_name)
+            curve.setPen(style['pen'])
+            curve.setSymbol(style['symbol'])
+            if style['symbol'] is not None:
+                curve.setSymbolSize(style['symbolSize'])
+                curve.setSymbolBrush(style['symbolBrush'])
+        except Exception:
+            pass
+
+    def _rebuild_legend(self):
+        """Rebuild legend entries from the current names and visibility."""
+        if not PYQTGRAPH_AVAILABLE or self.plot_legend is None:
+            return
+        try:
+            self.plot_legend.clear()
+            for name, curve in self.plot_curves.items():
+                # Filtering here consistently is the point: update_channel_name
+                # used to rebuild without it, so renaming any channel made
+                # previously hidden ones reappear in the legend.
+                if self.channel_visibility.get(name, True):
+                    self.plot_legend.addItem(curve, self.channel_custom_names.get(name, name))
+        except Exception:
+            pass
+
+    def _make_legend(self):
+        """Create a themed LegendItem attached to the current plot item."""
+        if not PYQTGRAPH_AVAILABLE or self.plot_widget is None:
+            return None
+        try:
+            legend = pg.LegendItem(
+                offset=self.LEGEND_OFFSET,
+                brush=pg.mkBrush(CURRENT_THEME["plot_legend_bg"]),
+                pen=pg.mkPen(CURRENT_THEME["plot_legend_border"]),
+                labelTextColor=CURRENT_THEME["plot_fg"],
+            )
+            legend.setParentItem(self.plot_widget.getPlotItem())
+            return legend
+        except Exception:
+            return None
+
+    def _repen_all_curves(self):
+        """Push the current channel colours onto live pyqtgraph curves"""
+        for channel_name in list(self.plot_curves):
+            self._apply_channel_style(channel_name)
 
     def _apply_pyqtgraph_theme(self, c: Dict[str, Any]):
         """Theme the pop-out plot window.
@@ -2381,7 +2404,7 @@ For technical support, refer to the README.md file."""
     
     def update_x_axis_label(self):
         """Update the X-axis label based on selection and custom override"""
-        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+        if self.plot_widget is not None:
             try:
                 if PYQTGRAPH_AVAILABLE:
                     # Use custom label if provided, otherwise use default based on selection
@@ -2399,7 +2422,7 @@ For technical support, refer to the README.md file."""
                                 label = channel_name
                     
                     self.plot_widget.setLabel('bottom', label, color=CURRENT_THEME["plot_fg"])
-            except:
+            except Exception:
                 pass
     
     def on_y_label_changed(self, event=None):
@@ -2409,7 +2432,7 @@ For technical support, refer to the README.md file."""
     
     def update_y_axis_label(self):
         """Update the Y-axis label based on custom override"""
-        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+        if self.plot_widget is not None:
             try:
                 if PYQTGRAPH_AVAILABLE:
                     # Use custom label if provided, otherwise use default
@@ -2419,7 +2442,7 @@ For technical support, refer to the README.md file."""
                         label = "Value"  # Default Y-axis label
                     
                     self.plot_widget.setLabel('left', label, color=CURRENT_THEME["plot_fg"])
-            except:
+            except Exception:
                 pass
     
     def on_title_changed(self, event=None):
@@ -2429,7 +2452,7 @@ For technical support, refer to the README.md file."""
     
     def update_plot_title(self):
         """Update the plot title based on custom override"""
-        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+        if self.plot_widget is not None:
             try:
                 if PYQTGRAPH_AVAILABLE:
                     # Use custom title if provided, otherwise use default
@@ -2439,7 +2462,7 @@ For technical support, refer to the README.md file."""
                         title = "Serial Data Plot"  # Default plot title
                     
                     self.plot_widget.setTitle(title, color=CURRENT_THEME["plot_fg"]) # type: ignore
-            except:
+            except Exception:
                 pass
     
     def parse_plot_data(self, raw_data: str):
@@ -2525,41 +2548,8 @@ For technical support, refer to the README.md file."""
                 # Update x-axis dropdown with new channel
                 self.update_xaxis_dropdown()
                 
-                # Add plot curve if plot widget exists
-                if hasattr(self, 'plot_widget') and self.plot_widget is not None:
-                    try:
-                        if PYQTGRAPH_AVAILABLE:
-                            # Use custom thickness, color, dot size, and line visibility
-                            thickness = self.channel_thickness[channel_name]
-                            color = self.channel_colors[channel_name]
-                            dot_size = self.channel_dot_size[channel_name]
-                            show_line = self.channel_show_line[channel_name]
-                            
-                            # Set up pen (line)
-                            pen = pg.mkPen(color=color, width=thickness) if show_line else None
-                            
-                            # Set up symbol (dots)
-                            symbol = 'o' if dot_size > 0 else None
-                            symbol_size = dot_size if dot_size > 0 else 1
-                            
-                            curve = self.plot_widget.plot(
-                                pen=pen, 
-                                symbol=symbol, 
-                                symbolSize=symbol_size,
-                                symbolBrush=color, 
-                                name=channel_name
-                            )
-                        else:
-                            # Fallback for dummy mode
-                            color = self.channel_colors[channel_name]
-                            curve = self.plot_widget.plot(pen=color, name=channel_name)
-                        self.plot_curves[channel_name] = curve
-                        # Add to legend if it exists
-                        if hasattr(self, 'plot_legend') and self.plot_legend is not None:
-                            display_name = self.channel_custom_names.get(channel_name, channel_name)
-                            self.plot_legend.addItem(curve, display_name)
-                    except:
-                        pass
+                # Add plot curve if the plot window is open
+                self._create_curve(channel_name)
             
             # Add data point using the provided sample number (same for all channels in this line)
             self.plot_data[channel_name].append((sample_number, value))
@@ -2670,20 +2660,7 @@ For technical support, refer to the README.md file."""
         """Toggle visibility of a plot channel"""
         self.channel_visibility[channel_name] = visible
         
-        # Update legend to show/hide the channel
-        if (hasattr(self, 'plot_legend') and self.plot_legend is not None and 
-            channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None):
-            try:
-                if PYQTGRAPH_AVAILABLE:
-                    # Rebuild legend based on current visibility
-                    self.plot_legend.clear() # type: ignore
-                    for ch_name, ch_curve in self.plot_curves.items():
-                        # Only add to legend if channel is visible
-                        if self.channel_visibility.get(ch_name, True):
-                            ch_display_name = self.channel_custom_names.get(ch_name, ch_name)
-                            self.plot_legend.addItem(ch_curve, ch_display_name)
-            except Exception as e:
-                pass
+        self._rebuild_legend()
         
         self.schedule_plot_update()  # Use throttled update
     
@@ -2735,7 +2712,7 @@ For technical support, refer to the README.md file."""
             if current_selection not in options:
                 self.xaxis_var.set('Sample Number')
                 self.x_axis_selection = 'Sample Number'
-        except:
+        except Exception:
             pass
     
     def update_channel_thickness(self, channel_name: str, thickness_str: str):
@@ -2745,16 +2722,8 @@ For technical support, refer to the README.md file."""
             thickness = max(1, min(10, thickness))  # Clamp between 1 and 10
             self.channel_thickness[channel_name] = thickness
             
-            # Update the plot curve if it exists
-            if channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None:
-                try:
-                    if PYQTGRAPH_AVAILABLE:
-                        color = self.channel_colors[channel_name]
-                        pen = pg.mkPen(color=color, width=thickness)
-                        self.plot_curves[channel_name].setPen(pen)
-                except:
-                    pass
-                    
+            self._apply_channel_style(channel_name)
+
         except ValueError:
             # Reset to current value if invalid input
             thickness_var = getattr(self, f"thickness_var_{channel_name}", None)
@@ -2768,21 +2737,8 @@ For technical support, refer to the README.md file."""
             dot_size = max(0, min(20, dot_size))  # Clamp between 0 and 20
             self.channel_dot_size[channel_name] = dot_size
             
-            # Update the plot curve if it exists
-            if channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None:
-                try:
-                    if PYQTGRAPH_AVAILABLE:
-                        curve = self.plot_curves[channel_name]
-                        color = self.channel_colors[channel_name]
-                        if dot_size > 0:
-                            curve.setSymbol('o')
-                            curve.setSymbolSize(dot_size)
-                            curve.setSymbolBrush(color)
-                        else:
-                            curve.setSymbol(None)  # No dots
-                except:
-                    pass
-                    
+            self._apply_channel_style(channel_name)
+
         except ValueError:
             # Reset to current value if invalid input
             dot_size_var = getattr(self, f"dot_size_var_{channel_name}", None)
@@ -2792,23 +2748,7 @@ For technical support, refer to the README.md file."""
     def toggle_channel_line(self, channel_name: str, show_line: bool):
         """Toggle line visibility for a channel"""
         self.channel_show_line[channel_name] = show_line
-        
-        # Update the plot curve if it exists
-        if channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None:
-            try:
-                if PYQTGRAPH_AVAILABLE:
-                    curve = self.plot_curves[channel_name]
-                    if show_line:
-                        # Show line with current thickness and color
-                        thickness = self.channel_thickness[channel_name]
-                        color = self.channel_colors[channel_name]
-                        pen = pg.mkPen(color=color, width=thickness)
-                        curve.setPen(pen)
-                    else:
-                        # Hide line
-                        curve.setPen(None)
-            except:
-                pass
+        self._apply_channel_style(channel_name)
     
     def update_channel_name(self, channel_name: str, new_name: str):
         """Update custom display name for a channel"""
@@ -2822,19 +2762,7 @@ For technical support, refer to the README.md file."""
             # Update x-axis dropdown with new display name
             self.update_xaxis_dropdown()
             
-            # Update legend if it exists and plot widget is available
-            if (hasattr(self, 'plot_legend') and self.plot_legend is not None and 
-                channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None):
-                try:
-                    if PYQTGRAPH_AVAILABLE:
-                        # Rebuild legend with updated names
-                        self.plot_legend.clear() # type: ignore
-                        for ch_name, ch_curve in self.plot_curves.items():
-                            ch_display_name = self.channel_custom_names.get(ch_name, ch_name)
-                            self.plot_legend.addItem(ch_curve, ch_display_name)
-                except Exception as e:
-                    # Silently fail - legend update is non-critical
-                    pass
+            self._rebuild_legend()
         else:
             # Reset to original name if empty
             name_var = getattr(self, f"name_var_{channel_name}", None)
@@ -2856,16 +2784,7 @@ For technical support, refer to the README.md file."""
             # Update button appearance
             self.update_color_button_appearance(channel_name)
             
-            # Update the plot curve if it exists
-            if channel_name in self.plot_curves and hasattr(self, 'plot_widget') and self.plot_widget is not None:
-                try:
-                    if PYQTGRAPH_AVAILABLE:
-                        thickness = self.channel_thickness[channel_name]
-                        pen = pg.mkPen(color=color[1], width=thickness)
-                        self.plot_curves[channel_name].setPen(pen)
-                        self.plot_curves[channel_name].setSymbolBrush(color[1])
-                except:
-                    pass
+            self._apply_channel_style(channel_name)
     
     def update_color_button_appearance(self, channel_name: str):
         """Update the color button appearance to show the selected color"""
@@ -2881,7 +2800,7 @@ For technical support, refer to the README.md file."""
                                  activeforeground=contrast_fg_for(color),
                                  relief="flat", bd=1,
                                  highlightbackground=CURRENT_THEME["border"])
-            except:
+            except Exception:
                 pass
     
     def toggle_plot_pause(self):
@@ -3023,9 +2942,6 @@ For technical support, refer to the README.md file."""
                             event.accept()
                     
                     self.plot_window = PlotWindow(self)
-                else:
-                    # Fallback for when PyQtGraph is not available
-                    self.plot_window = QtWidgets.QMainWindow()
                 
                 self.plot_window.setWindowTitle("Serial Data Plot")
                 self.plot_window.setGeometry(100, 100, 800, 600)
@@ -3052,21 +2968,7 @@ For technical support, refer to the README.md file."""
                 except Exception:
                     pass
 
-                # Add legend using LegendItem
-                if PYQTGRAPH_AVAILABLE:
-                    try:
-                        self.plot_legend = pg.LegendItem(
-                            offset=(-70, 30),  # Negative offset for top-right
-                            brush=pg.mkBrush(CURRENT_THEME["plot_legend_bg"]),
-                            pen=pg.mkPen(CURRENT_THEME["plot_legend_border"]),
-                            labelTextColor=CURRENT_THEME["plot_fg"]
-                        )
-                        self.plot_legend.setParentItem(self.plot_widget.getPlotItem())
-                    except:
-                        # Fallback if legend creation fails
-                        self.plot_legend = None
-                else:
-                    self.plot_legend = None
+                self.plot_legend = self._make_legend()
 
                 # Colour the freshly built window for the active theme
                 self._apply_pyqtgraph_theme(CURRENT_THEME)
@@ -3075,41 +2977,10 @@ For technical support, refer to the README.md file."""
                 
                 # Recreate all plot curves
                 self.plot_curves = {}
-                for i, channel_name in enumerate(self.plot_data.keys()):
-                    if PYQTGRAPH_AVAILABLE:
-                        # Use custom thickness, color, dot size, and line visibility settings
-                        thickness = self.channel_thickness.get(channel_name, 2)
-                        color = self.channel_colors.get(channel_name, self.plot_colors[i % len(self.plot_colors)])
-                        dot_size = self.channel_dot_size.get(channel_name, 4)
-                        show_line = self.channel_show_line.get(channel_name, True)
-                        
-                        # Set up pen (line)
-                        pen = pg.mkPen(color=color, width=thickness) if show_line else None
-                        
-                        # Set up symbol (dots)
-                        symbol = 'o' if dot_size > 0 else None
-                        symbol_size = dot_size if dot_size > 0 else 1
-                        
-                        curve = self.plot_widget.plot(
-                            pen=pen,
-                            symbol=symbol,
-                            symbolSize=symbol_size,
-                            symbolBrush=color,
-                            name=channel_name
-                        )
-                    else:
-                        # Fallback for dummy mode
-                        color = self.channel_colors.get(channel_name, self.plot_colors[i % len(self.plot_colors)])
-                        curve = self.plot_widget.plot(pen=color, name=channel_name)
-                    self.plot_curves[channel_name] = curve
-                    # Add to legend if it exists
-                    if self.plot_legend is not None:
-                        try:
-                            display_name = self.channel_custom_names.get(channel_name, channel_name)
-                            self.plot_legend.addItem(curve, display_name)
-                        except:
-                            pass
-                
+                self._curve_has_data.clear()
+                for channel_name in self.plot_data:
+                    self._create_curve(channel_name)
+
                 # Update with current data
                 self.update_plot_display()
             
@@ -3186,21 +3057,17 @@ For technical support, refer to the README.md file."""
             if hasattr(self, 'plot_legend') and self.plot_legend is not None:
                 try:
                     self.plot_legend.setParentItem(None)
-                except:
+                except Exception:
                     pass
                 self.plot_legend = None
             
             self.plot_widget.clear()
             
-            # Recreate legend after clearing
-            if PYQTGRAPH_AVAILABLE:
-                try:
-                    self.plot_legend = pg.LegendItem(offset=(-70, 30))  # Negative offset for top-right
-                    self.plot_legend.setParentItem(self.plot_widget.getPlotItem())
-                except:
-                    self.plot_legend = None
-            else:
-                self.plot_legend = None
+            # Recreate legend after clearing. This used to construct a bare
+            # LegendItem, so the legend lost its theme colours after every
+            # Clear Plot Data - dark text on a dark background until the next
+            # theme switch.
+            self.plot_legend = self._make_legend()
         
         self.plot_status_label.config(text="Plot data and channels cleared - axis labels preserved")
     
@@ -3221,7 +3088,7 @@ For technical support, refer to the README.md file."""
             self.global_sample_counter = 0
         
         # Update plot display to show only the remaining samples
-        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+        if self.plot_widget is not None:
             self.update_plot_display()
         
         self.plot_status_label.config(text="Buffer cleared - channels preserved")
