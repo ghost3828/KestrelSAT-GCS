@@ -30,9 +30,10 @@ if __name__ == "__main__":
     available_ports = list_serial_ports()
     
     if available_ports:
-        print(f"\nYou can use any of these ports with the simulator:")
+        print("\nSelect any of these ports in the Ground Control Station:")
         for port in available_ports:
-            print(f"python simulator.py {port}")
+            print(f"  {port}")
+        print("\nNo hardware? Choose 'TEST MODE' in the port dropdown instead.")
     else:
         print("\nFor testing without hardware, I recommend using virtual serial ports:")
         print("- Download 'com0com' (free virtual serial port driver)")

@@ -1,0 +1,28 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyInstaller build output
+build/
+dist/
+*.manifest
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Application runtime state
+# Per-user connection/appearance settings, written next to the working directory.
+# See serial_gui_settings.example.json for the expected keys.
+serial_gui_settings.json
+logs/
+
+# Editor scratch
+tempCodeRunnerFile.py
+.vscode/*.log
+
+# OS
+.DS_Store
+Thumbs.db

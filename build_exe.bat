@@ -1,22 +1,18 @@
 @echo off
-echo Building Serial Communication GUI...
+echo Building KestrelSAT Ground Control Station...
 
 REM Activate virtual environment
 call .venv\Scripts\activate
 
-REM Clean previous builds
+REM Clean previous builds.
+REM NOTE: do NOT delete *.spec here - KestrelSAT_GCS_v1.spec is checked in and
+REM is the build definition this script uses.
 if exist dist rmdir /s /q dist
 if exist build rmdir /s /q build
-if exist *.spec del *.spec
 
-REM Build the executable
-pyinstaller --onefile --windowed --name "SerialGUI" ^
-    --hidden-import "PyQt5.QtCore" ^
-    --hidden-import "PyQt5.QtWidgets" ^
-    --hidden-import "pyqtgraph" ^
-    --hidden-import "serial.tools.list_ports" ^
-    --collect-data "pyqtgraph" ^
-    serial_gui.py
+REM Build the executable from the checked-in spec, so this script and
+REM "pyinstaller KestrelSAT_GCS_v1.spec" produce the same artifact.
+pyinstaller KestrelSAT_GCS_v1.spec
 
-echo Build complete! Check the dist folder.
+echo Build complete! Check the dist folder for KestrelSAT_GCS_v1.exe
 pause
