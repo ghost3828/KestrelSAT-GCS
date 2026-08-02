@@ -20,6 +20,7 @@ interactive rendering of live data.
 - **Logging**: Continuous logging to file with a live file-size readout, plus one-shot
   display captures
 - **Appearance Themes**: Dark, Light, and High Contrast, applied instantly without restarting
+- **High-DPI Aware**: Scales itself to stay readable on 4K and other high-resolution displays
 - **Status Bar**: Connection status and samples-per-second
 
 ## Requirements
@@ -118,6 +119,23 @@ channel trace colours all follow it. A colour you pick yourself for a channel is
 
 Note that Windows' own file, colour, and message dialogs are drawn by the operating system
 and cannot be themed, so those still appear in the system's colours.
+
+### Display Scale
+On a high-DPI screen the interface scales itself so text stays readable. **Options →
+Preferences → Display Scale** shows what was detected and lets you override it
+(100% through 250%).
+
+Two situations are handled, and they are not the same problem:
+
+- **Windows scaling at 125/150/200%.** The app declares itself DPI-aware, so Windows
+  no longer bitmap-stretches it — text is drawn crisply — and it then scales itself to
+  match.
+- **A 4K panel running at 100% scaling.** Windows reports a normal 96 DPI here because
+  no scaling is active, yet the pixels are physically tiny. Automatic falls back to the
+  raw resolution and enlarges anyway.
+
+Changing the setting resizes text immediately. The window itself and the connection
+indicator take their new size on the next start.
 
 ### Display Options
 - **Timestamps**: Add time stamps to all messages

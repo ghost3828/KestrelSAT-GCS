@@ -6,6 +6,7 @@ display. On Linux use `xvfb`; on Windows they run directly.
 | file | what it covers | needs a display |
 |---|---|---|
 | `test_themes.py` | Theme table: token parity across the three themes, colour format, WCAG contrast ratios. Parses `serial_gui.py` with `ast`, so it imports nothing. | no |
+| `test_scaling.py` | High-DPI scaling: detection, font/geometry scaling, the Preferences round-trip, and that repeated application does not compound. | yes |
 | `test_correctness.py` | Regression tests for the crash and data-loss fixes: TEST MODE, tab delimiter, buffer cap, disconnect with a failing `close()`, timer cancellation, tooltips on buttons, channel cap, channel cleanup, legend consistency. | yes |
 | `test_smoke.py` | Builds the whole UI, cycles all three themes, opens every dialog, checks settings persistence. | yes |
 | `test_plot.py` | pyqtgraph window: background, axes, curve colours, live theme switching, close/reopen. | yes |

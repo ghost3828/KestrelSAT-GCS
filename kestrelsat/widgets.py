@@ -47,7 +47,9 @@ class ToolTip:
             borderwidth=0,
             padx=4,
             pady=2,
-            font=("Arial", 9)
+            # TkTooltipFont is scaled by scaling.apply_fonts, so the tooltip
+            # tracks the rest of the interface instead of staying at 9pt.
+            font="TkTooltipFont"
         )
         label.pack()
     

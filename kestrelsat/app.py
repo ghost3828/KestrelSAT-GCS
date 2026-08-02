@@ -10,7 +10,7 @@ except ImportError:
     raise SystemExit(1)
 try:
     import pyqtgraph as pg
-    from PyQt5 import QtWidgets
+    from PyQt5 import QtCore, QtWidgets
     # NOTE: background/foreground are set by ThemeManager once settings are loaded.
     PYQTGRAPH_AVAILABLE = True
 except ImportError as e:
@@ -22,6 +22,7 @@ except ImportError as e:
     # behind a PYQTGRAPH_AVAILABLE check, and show_plot_window() returns early,
     # so plot_widget stays None and the plotting paths are never entered.
     pg = None
+    QtCore = None
     QtWidgets = None
 
 import sys
@@ -43,6 +44,7 @@ from .themes import (
     SETTINGS_FILE, DEFAULT_THEME, THEME_ORDER, THEMES, contrast_fg_for,
 )
 from .channels import Channel
+from . import scaling
 from .theming import ThemeManager
 from .widgets import ToolTip
 
@@ -66,10 +68,25 @@ class SerialGUI:
     # Legend placement, negative offset anchors it to the top right.
     LEGEND_OFFSET = (-70, 30)
 
+    # Window size at 100% scale; scaled up on high-DPI displays.
+    BASE_GEOMETRY = "800x780"
+
     def __init__(self, root: tk.Tk):
         self.root = root
+
+        # Settings and display scale come first: every widget below is built
+        # at the scaled font size, so this cannot wait until after setup_gui().
+        self.settings = self.load_settings()
+        self.ui_scale_setting = self.settings.get('ui_scale', 'auto')
+        self.ui_scale = scaling.resolve(self.ui_scale_setting, root)
+        scaling.apply_fonts(root, self.ui_scale)
+        # Derived from the scaled named fonts, so these follow the UI size
+        # instead of being pinned to a literal point size.
+        self.ui_font_bold = scaling.derive_font(root, weight="bold")
+        self.ui_font_small_bold = scaling.derive_font(root, weight="bold", size_delta=-1)
+
         self.root.title("USAFA ASTRO - KestrelSAT Ground Control Station v3.0.0")
-        self.root.geometry("800x780")
+        self.root.geometry(scaling.scale_geometry(self.BASE_GEOMETRY, self.ui_scale))
         self.root.resizable(True, True)
 
         # Set window and taskbar icon. Look next to the package, and next to
@@ -139,9 +156,6 @@ class SerialGUI:
         self.y_axis_custom_label = ""  # Custom Y-axis label override
         self.plot_title_custom = ""  # Custom plot title override
         
-        # Settings
-        self.settings = self.load_settings()
-
         # Appearance / theme. Applied once here so that the ttk style database
         # and the Tk option database (menus, combobox popdowns) are already
         # correct while setup_gui() builds the widgets.
@@ -319,12 +333,14 @@ class SerialGUI:
         status_frame.pack()
         
         # Status indicator (colored circle)
-        self.status_canvas = tk.Canvas(status_frame, width=16, height=16, highlightthickness=0)
+        _dot = scaling.px(self.ui_scale, 16)
+        self.status_canvas = tk.Canvas(status_frame, width=_dot, height=_dot, highlightthickness=0)
         self.status_canvas.pack(side=tk.LEFT, padx=(0, 8), pady=2)
         
         # Draw initial red circle (disconnected)
+        _inset = scaling.px(self.ui_scale, 2)
         self.status_circle = self.status_canvas.create_oval(
-            2, 2, 14, 14,
+            _inset, _inset, _dot - _inset, _dot - _inset,
             fill=themes.CURRENT["error"], outline=themes.CURRENT["error_dim"])
         
         # Status text
@@ -332,7 +348,7 @@ class SerialGUI:
         self.status_var.set("Disconnected")
         # NOTE: named conn_status_label so it is not shadowed by the bottom
         # status bar's self.plot_status_label, which is created later.
-        self.conn_status_label = ttk.Label(status_frame, textvariable=self.status_var, font=("Arial", 10, "bold"))
+        self.conn_status_label = ttk.Label(status_frame, textvariable=self.status_var, font=self.ui_font_bold)
         self.conn_status_label.pack(side=tk.LEFT)
         
         # Logging controls on the right
@@ -352,7 +368,7 @@ class SerialGUI:
         
         self.log_status_var = tk.StringVar()
         self.log_status_var.set("Not logging")
-        self.log_status_label = ttk.Label(log_status_frame, textvariable=self.log_status_var, font=("Arial", 10, "bold"))
+        self.log_status_label = ttk.Label(log_status_frame, textvariable=self.log_status_var, font=self.ui_font_bold)
         self.log_status_label.pack()
         self._refresh_log_status_color()
     
@@ -388,9 +404,9 @@ class SerialGUI:
             self.received_text.tag_config("RECEIVED", foreground=c["log_received"])
             self.received_text.tag_config("SENT", foreground=c["log_sent"])
             self.received_text.tag_config("SYSTEM", foreground=c["log_system"],
-                                          font=("Arial", 9, "bold"))
+                                          font=self.ui_font_small_bold)
             self.received_text.tag_config("ERROR", foreground=c["log_error"],
-                                          font=("Arial", 9, "bold"))
+                                          font=self.ui_font_small_bold)
         except tk.TclError:
             pass
 
@@ -402,6 +418,29 @@ class SerialGUI:
         self.theme_name = name
         self.themes.apply(name)
         self._write_settings({'theme': name})
+
+    def on_ui_scale_selected(self, *_args):
+        """Apply and persist the display scale chosen in Preferences."""
+        value = self._scale_labels.get(self.scale_var.get())
+        if value is None:
+            return
+        self.ui_scale_setting = value
+        self.ui_scale = scaling.resolve(value, self.root)
+
+        # Font changes are live: the named fonts drive every ttk widget, and
+        # ui_font_bold / ui_font_small_bold are derived from them. Pixel
+        # dimensions fixed at build time (the window itself, the status dot)
+        # keep their old size until restart, which is why the dialog says so.
+        scaling.apply_fonts(self.root, self.ui_scale)
+        self.ui_font_bold.configure(**scaling.derive_font(self.root, weight="bold").actual())
+        self.ui_font_small_bold.configure(
+            **scaling.derive_font(self.root, weight="bold", size_delta=-1).actual())
+        self._configure_text_tags(themes.CURRENT)
+
+        self._write_settings({'ui_scale': value})
+        self.log_message(
+            f"Display scale set to {self.ui_scale:.0%}. "
+            "Restart to resize the window and status indicator to match.", "SYSTEM")
 
     def _on_theme_applied(self, c: Dict[str, Any]):
         """Fixups the generic widget walk cannot cover. Order matters."""
@@ -1287,7 +1326,8 @@ class SerialGUI:
             'data_bits': 8,
             'parity': 'None',
             'stop_bits': 1,
-            'theme': DEFAULT_THEME
+            'theme': DEFAULT_THEME,
+            'ui_scale': 'auto'
         }
 
         try:
@@ -1417,8 +1457,34 @@ class SerialGUI:
                   foreground=themes.CURRENT["fg_muted"]).grid(row=1, column=0,
                                                              sticky=tk.W, pady=(8, 0))
 
+        scale_frame = ttk.LabelFrame(main_frame, text="Display Scale", padding="10")
+        scale_frame.grid(row=2, column=0, sticky=tk.EW, pady=(12, 0))
+
+        ttk.Label(scale_frame, text="Interface size:").grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
+
+        self._scale_labels = {label: value for value, label in scaling.SCALE_CHOICES}
+        current_label = next(
+            (label for value, label in scaling.SCALE_CHOICES
+             if value == str(self.ui_scale_setting)),
+            scaling.SCALE_CHOICES[0][1])
+        self.scale_var = tk.StringVar(value=current_label)
+        scale_combo = ttk.Combobox(scale_frame, textvariable=self.scale_var,
+                                   state="readonly", width=24,
+                                   values=[label for _v, label in scaling.SCALE_CHOICES])
+        scale_combo.grid(row=0, column=1, sticky=tk.W)
+        scale_combo.bind("<<ComboboxSelected>>", self.on_ui_scale_selected)
+        ToolTip(scale_combo,
+                "Enlarges all text and controls. Automatic follows your display's "
+                "DPI, and assumes a 4K screen needs enlarging even at 100% scaling.")
+
+        detected = scaling.detect_scale(self.root)
+        ttk.Label(scale_frame,
+                  text=f"Currently {self.ui_scale:.0%}  (display suggests {detected:.0%})",
+                  foreground=themes.CURRENT["fg_muted"]).grid(
+                      row=1, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
+
         ttk.Button(main_frame, text="Close", command=dialog.destroy).grid(
-            row=2, column=0, pady=(12, 0))
+            row=3, column=0, pady=(12, 0))
 
         self.themes.restyle(dialog)
 
@@ -1556,7 +1622,7 @@ For technical support, refer to the README.md file."""
         """Show serial configuration dialog"""
         dialog = tk.Toplevel(self.root)
         dialog.title("Serial Configuration")
-        dialog.geometry("220x150")
+        dialog.geometry(scaling.scale_geometry("220x150", self.ui_scale))
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -1610,6 +1676,14 @@ For technical support, refer to the README.md file."""
         try:
             self.qt_app = QtWidgets.QApplication.instance()
             if self.qt_app is None:
+                # Both attributes must be set before the QApplication exists.
+                # Without them the plot window renders at physical pixels on a
+                # scaled display, so its axis text ends up far smaller than the
+                # rest of the interface.
+                QtWidgets.QApplication.setAttribute(
+                    QtCore.Qt.AA_EnableHighDpiScaling, True)
+                QtWidgets.QApplication.setAttribute(
+                    QtCore.Qt.AA_UseHighDpiPixmaps, True)
                 self.qt_app = QtWidgets.QApplication([])
         except Exception:
             self.qt_app = None
@@ -2403,7 +2477,9 @@ For technical support, refer to the README.md file."""
                     self.plot_window = PlotWindow(self)
                 
                 self.plot_window.setWindowTitle("Serial Data Plot")
-                self.plot_window.setGeometry(100, 100, 800, 600)
+                self.plot_window.setGeometry(
+                    100, 100,
+                    scaling.px(self.ui_scale, 800), scaling.px(self.ui_scale, 600))
                 
                 self.plot_widget = pg.PlotWidget()
                 
@@ -2532,6 +2608,10 @@ For technical support, refer to the README.md file."""
 def main():
     """Main function"""
     try:
+        # Before tk.Tk(): once the root exists Windows has already decided how
+        # to treat this process.
+        scaling.enable_dpi_awareness()
+
         root = tk.Tk()
         app = SerialGUI(root)
 
