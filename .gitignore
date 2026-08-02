@@ -32,3 +32,6 @@ tests/logs/
 
 # Built executables
 *.exe
+
+# Notepad tab output
+notes/

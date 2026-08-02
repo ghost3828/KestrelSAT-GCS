@@ -25,7 +25,7 @@ if os.path.exists(sg.SETTINGS_FILE):
 root = tk.Tk()
 root.geometry("900x700")
 app = sg.SerialGUI(root)
-app.notebook.select(1)  # Plot tab - widgets aren't mapped/sized until selected
+app.notebook.select(app.plot_frame)  # Plot tab - widgets aren't mapped/sized until selected
 root.update()
 root.update_idletasks()
 

@@ -144,11 +144,20 @@ class SerialGUI:
         self.logging_active = False
         self.log_file_path = None
         self.log_file_handle = None
+
+        # Notepad functionality
+        self.notes_dirty = False
+        self.notes_file_path = None
         
         # Plotting functionality
         self.plot_colors = list(themes.CURRENT["plot_palette"])  # refreshed on theme change
         self.plot_max_points = 1000
         self.plot_width = 500  # Number of samples to display in plot
+        self.x_axis_width = 500  # Number of samples visible on the X-axis
+        self.x_axis_width_locked = False  # Applied width lock; zoom/pan can release it
+        self._applying_x_range = False
+        self._x_width_ui_dirty = False
+        self._x_width_unlock_notice_pending = False
         self.delimiter = ','
         self.plot_paused = False  # Flag to pause/resume plotting
         self.x_axis_selection = "Sample Number"  # Default x-axis is sample number
@@ -185,6 +194,8 @@ class SerialGUI:
         # Create logs directory if it doesn't exist
         self.logs_dir = os.path.join(os.getcwd(), "logs")
         os.makedirs(self.logs_dir, exist_ok=True)
+        self.notes_dir = os.path.join(os.getcwd(), "notes")
+        os.makedirs(self.notes_dir, exist_ok=True)
         
         # Setup GUI
         self.setup_gui()
@@ -237,12 +248,19 @@ class SerialGUI:
         self.connection_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.connection_frame, text="Connection")
 
+        # Create Notepad tab
+        self.notepad_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.notepad_frame, text="Notepad")
+
         # Create Plot tab (empty for now)
         self.plot_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.plot_frame, text="Plot")
 
         # Setup Connection tab content
         self.create_connection_content()
+
+        # Setup Notepad tab content
+        self.create_notepad_content()
 
         # Setup Plot tab content
         self.create_plot_content()
@@ -357,6 +375,14 @@ class SerialGUI:
         
         logging_frame = ttk.Frame(logging_outer_frame)
         logging_frame.pack()
+
+        self.change_appearance_btn = ttk.Button(
+            logging_frame,
+            text="Change Appearance",
+            command=self.cycle_theme
+        )
+        self.change_appearance_btn.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self.change_appearance_btn, "Cycle theme: Light -> Dark -> High Contrast")
         
         self.logging_btn = ttk.Button(logging_frame, text="Start Logging", command=self.toggle_logging)
         self.logging_btn.pack(side=tk.LEFT, padx=(0, 10))
@@ -441,11 +467,24 @@ class SerialGUI:
         self.log_message(
             f"Display scale set to {self.ui_scale:.0%}. "
             "Restart to resize the window and status indicator to match.", "SYSTEM")
+    def cycle_theme(self):
+        """Cycle through the three available themes from the top toolbar."""
+        cycle_order = ("light", "dark", "high_contrast")
+        current = self.theme_var.get()
+        try:
+            idx = cycle_order.index(current)
+        except ValueError:
+            idx = -1
+
+        next_theme = cycle_order[(idx + 1) % len(cycle_order)]
+        self.theme_var.set(next_theme)
+        self.on_theme_selected()
 
     def _on_theme_applied(self, c: Dict[str, Any]):
         """Fixups the generic widget walk cannot cover. Order matters."""
         self.plot_colors = list(c["plot_palette"])
         self._configure_text_tags(c)
+        self._style_notepad_widget(c)
         self._remap_auto_channel_colors(c)
         for channel_name in self.channels:
             self.update_color_button_appearance(channel_name)
@@ -622,6 +661,119 @@ class SerialGUI:
         self.create_connection_frame()
         self.create_data_frame()
         self.create_control_frame()
+
+    def create_notepad_content(self):
+        """Create all content for the Notepad tab"""
+        toolbar = ttk.Frame(self.notepad_frame)
+        toolbar.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        self.insert_timestamp_btn = ttk.Button(
+            toolbar,
+            text="Insert Timestamp",
+            command=self.insert_notepad_timestamp
+        )
+        self.insert_timestamp_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.save_notes_btn = ttk.Button(
+            toolbar,
+            text="Save Notes",
+            command=self.save_notepad_notes
+        )
+        self.save_notes_btn.pack(side=tk.LEFT)
+
+        self.notes_status_var = tk.StringVar(value="Unsaved")
+        ttk.Label(toolbar, textvariable=self.notes_status_var).pack(side=tk.RIGHT)
+
+        notes_frame = ttk.Frame(self.notepad_frame)
+        notes_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.notepad_text = tk.Text(notes_frame, wrap=tk.WORD, undo=True)
+        notes_scroll = ttk.Scrollbar(notes_frame, orient=tk.VERTICAL, command=self.notepad_text.yview)
+        self.notepad_text.configure(yscrollcommand=notes_scroll.set)
+        self.notepad_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        notes_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.notepad_text.bind('<<Modified>>', self.on_notepad_modified)
+        self._style_notepad_widget(themes.CURRENT)
+
+    def _style_notepad_widget(self, c: Dict[str, Any]):
+        """Apply active theme colors to the classic Tk notepad widget."""
+        try:
+            self.notepad_text.configure(
+                bg=c["log_bg"],
+                fg=c["log_fg"],
+                insertbackground=c["log_fg"],
+                selectbackground=c["select_bg"],
+                selectforeground=c["select_fg"],
+            )
+        except Exception:
+            pass
+
+    def _default_notepad_filename(self):
+        """Default file name for notes export."""
+        return datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S_notepad_notes")
+
+    def on_notepad_modified(self, _event=None):
+        """Track dirty state for unsaved notes prompts."""
+        if not self.notepad_text.edit_modified():
+            return
+        self.notes_dirty = True
+        self.notes_status_var.set("Unsaved")
+        self.notepad_text.edit_modified(False)
+
+    def insert_notepad_timestamp(self):
+        """Insert timestamp at the current insertion cursor."""
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.notepad_text.insert(tk.INSERT, timestamp)
+        self.notepad_text.focus_set()
+
+    def save_notepad_notes(self):
+        """Save Notepad contents to a text file.
+
+        Returns True on success and False when save is cancelled or fails.
+        """
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Save notes",
+            initialfile=self._default_notepad_filename(),
+            initialdir=self.notes_dir
+        )
+
+        if not filename:
+            return False
+
+        try:
+            content = self.notepad_text.get('1.0', tk.END)
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            self.notes_file_path = filename
+            self.notes_dirty = False
+            self.notes_status_var.set(f"Saved: {os.path.basename(filename)}")
+            self.notepad_text.edit_modified(False)
+            return True
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save notes: {str(e)}")
+            return False
+
+    def _confirm_notepad_close(self):
+        """Prompt to save Notepad changes before closing.
+
+        Returns True when shutdown should continue.
+        """
+        if not self.notes_dirty:
+            return True
+
+        result = messagebox.askyesnocancel(
+            "Unsaved Notes",
+            "Notepad notes have unsaved changes. Save before closing?"
+        )
+        if result is None:
+            return False
+        if result:
+            return self.save_notepad_notes()
+        return True
     
     def create_connection_frame(self):
         """Create connection settings frame"""
@@ -955,6 +1107,23 @@ class SerialGUI:
         """Drain the worker queue on the main thread."""
         if self._closing:
             return
+
+        # Keep Tk updates on the Tk event loop. The plot zoom callback comes
+        # from Qt, so it only marks these flags and leaves widget updates here.
+        if self._x_width_ui_dirty:
+            self._x_width_ui_dirty = False
+            try:
+                if hasattr(self, 'x_width_var'):
+                    self.x_width_var.set(str(self.x_axis_width))
+            except Exception:
+                pass
+        if self._x_width_unlock_notice_pending:
+            self._x_width_unlock_notice_pending = False
+            try:
+                self.plot_status_label.config(
+                    text="X-axis width unlocked by zoom/pan. Click Apply to re-lock.")
+            except Exception:
+                pass
 
         for _ in range(self.RX_PUMP_BUDGET):
             try:
@@ -1383,6 +1552,10 @@ class SerialGUI:
         # against a second pass calling destroy() on an already-dead root.
         if self._closing:
             return
+
+        if not self._confirm_notepad_close():
+            return
+
         self._closing = True
 
         # Cancel the recurring timers first. stop_logging() and disconnect()
@@ -1762,7 +1935,7 @@ For technical support, refer to the README.md file."""
         settings_frame = ttk.LabelFrame(content_frame, text="Plot Settings", padding="10")
         settings_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        ttk.Label(settings_frame, text="Buffer Size (samples):").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+        ttk.Label(settings_frame, text="Buffer Size (number of samples/channel stored in memory):").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
         self.buffer_size_var = tk.StringVar(value=str(self.plot_max_points))
         buffer_entry = ttk.Entry(settings_frame, textvariable=self.buffer_size_var, width=10)
         buffer_entry.grid(row=0, column=1, padx=(0, 20), sticky=tk.W)
@@ -1770,10 +1943,10 @@ For technical support, refer to the README.md file."""
         buffer_entry.bind('<FocusOut>', self.update_buffer_settings)
         ToolTip(buffer_entry, "Maximum number of samples stored in memory per channel")
 
-        ttk.Label(settings_frame, text="Plot Width (samples):").grid(row=0, column=2, sticky=tk.W, padx=(0, 5))
+        ttk.Label(settings_frame, text="Plot Size (number of samples/channel shown on plot):").grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(10, 0))
         self.plot_width_var = tk.StringVar(value=str(self.plot_width))
         width_entry = ttk.Entry(settings_frame, textvariable=self.plot_width_var, width=10)
-        width_entry.grid(row=0, column=3, padx=(0, 20), sticky=tk.W)
+        width_entry.grid(row=1, column=1, padx=(0, 20), sticky=tk.W, pady=(10, 0))
         width_entry.bind('<Return>', self.update_buffer_settings)
         width_entry.bind('<FocusOut>', self.update_buffer_settings)
         ToolTip(width_entry, "Number of recent samples to display in the plot")
@@ -1785,10 +1958,10 @@ For technical support, refer to the README.md file."""
         clear_btn.grid(row=0, column=5, padx=(10, 0))
         ToolTip(clear_btn, "Clear only plot data buffer, preserve all channels and settings")
 
-        ttk.Label(settings_frame, text="Plot Title:").grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(10, 0))
+        ttk.Label(settings_frame, text="Plot Title:").grid(row=2, column=0, sticky=tk.W, padx=(0, 5), pady=(10, 0))
         self.title_var = tk.StringVar(value=self.plot_title_custom)
         title_entry = ttk.Entry(settings_frame, textvariable=self.title_var, width=30)
-        title_entry.grid(row=1, column=1, columnspan=2, sticky=tk.W, pady=(10, 0))
+        title_entry.grid(row=2, column=1, columnspan=2, sticky=tk.W, pady=(10, 0))
         title_entry.bind('<Return>', self.on_title_changed)
         title_entry.bind('<FocusOut>', self.on_title_changed)
         ToolTip(title_entry, "Optional custom title for the plot (leave empty for default)")
@@ -1813,6 +1986,17 @@ For technical support, refer to the README.md file."""
         xlabel_entry.bind('<Return>', self.on_x_label_changed)
         xlabel_entry.bind('<FocusOut>', self.on_x_label_changed)
         ToolTip(xlabel_entry, "Optional custom label for X-axis (leave empty for automatic)")
+
+        ttk.Label(xaxis_frame, text="X-Axis Width (samples):").grid(row=2, column=0, sticky=tk.W, padx=(0, 10), pady=(5, 0))
+        self.x_width_var = tk.StringVar(value=str(self.x_axis_width))
+        x_width_entry = ttk.Entry(xaxis_frame, textvariable=self.x_width_var, width=10)
+        x_width_entry.grid(row=2, column=1, sticky=tk.W, pady=(5, 0))
+        x_width_entry.bind('<Return>', self.on_x_width_changed)
+        ToolTip(x_width_entry, "Visible X-axis window width in samples")
+
+        x_width_apply_btn = ttk.Button(xaxis_frame, text="Apply", command=self.on_x_width_changed)
+        x_width_apply_btn.grid(row=2, column=2, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        ToolTip(x_width_apply_btn, "Apply X-axis width and lock it until you zoom/pan")
 
         # Set Y-Axis frame
         self.channel_frame = ttk.LabelFrame(content_frame, text="Set Y-Axis", padding="10")
@@ -1884,6 +2068,48 @@ For technical support, refer to the README.md file."""
         
         # Update plot display with new x-axis
         self.schedule_plot_update()
+
+    def on_x_width_changed(self, event=None):
+        """Handle X-axis width changes from the Set X-Axis panel"""
+        try:
+            new_x_width = int(self.x_width_var.get())
+            if new_x_width < 1:
+                new_x_width = 1
+            elif new_x_width > 100000:
+                new_x_width = 100000
+
+            self.x_axis_width = new_x_width
+            self.x_axis_width_locked = True
+            self.x_width_var.set(str(new_x_width))
+            self.schedule_plot_update()
+        except ValueError:
+            self.x_width_var.set(str(self.x_axis_width))
+
+    def _on_plot_xrange_changed(self, *_args):
+        """Track manual zoom/pan and release X-axis width lock on user override."""
+        if self._applying_x_range:
+            return
+
+        try:
+            x_range = None
+            if _args:
+                candidate = _args[-1]
+                if isinstance(candidate, (tuple, list)) and len(candidate) == 2:
+                    x_range = candidate
+            if x_range is None:
+                return
+
+            if not x_range or len(x_range) != 2:
+                return
+            width = max(1, int(round(abs(x_range[1] - x_range[0]))))
+            self.x_axis_width = width
+            self._x_width_ui_dirty = True
+
+            if self.x_axis_width_locked:
+                self.x_axis_width_locked = False
+                self._x_width_unlock_notice_pending = True
+        except Exception:
+            pass
     
     def update_buffer_settings(self, event=None):
         """Update buffer size and plot width settings"""
@@ -2362,6 +2588,8 @@ For technical support, refer to the README.md file."""
             return
 
         try:
+            window_x_data = None
+
             # Resolve the x-axis channel once per frame, not per curve
             x_axis_channel = None
             if self.x_axis_selection != "Sample Number":
@@ -2415,6 +2643,11 @@ For technical support, refer to the README.md file."""
                 curve.setData(x_data, y_data)
                 ch.has_data = True
 
+                if window_x_data is None:
+                    window_x_data = x_data
+
+            self._apply_x_axis_window(window_x_data)
+
         except Exception as e:
             # Report once. This handler previously discarded every plotting
             # failure with no trace at all, so a channel could silently stop
@@ -2422,6 +2655,33 @@ For technical support, refer to the README.md file."""
             if not self._plot_error_reported:
                 self._plot_error_reported = True
                 self.log_message(f"Error updating plot: {e}", "ERROR")
+
+    def _apply_x_axis_window(self, x_data):
+        """Apply the visible X-axis limits without changing plotted samples."""
+        if self.plot_widget is None or not x_data or not self.x_axis_width_locked:
+            return
+
+        try:
+            width = max(1, int(self.x_axis_width))
+            x_values = list(x_data)
+            start_index = max(0, len(x_values) - width)
+            x_min = x_values[start_index]
+            x_max = x_values[-1]
+
+            if x_min == x_max:
+                x_min -= 0.5
+                x_max += 0.5
+
+            plot_item = self.plot_widget.getPlotItem()
+            plot_item.enableAutoRange(axis='x', enable=False)
+            self._applying_x_range = True
+            try:
+                plot_item.setXRange(x_min, x_max, padding=0)
+            finally:
+                self._applying_x_range = False
+        except Exception:
+            self._applying_x_range = False
+            pass
 
     def _tail(self, samples):
         """Return the newest plot_width samples of a deque as a list.
@@ -2482,6 +2742,11 @@ For technical support, refer to the README.md file."""
                     scaling.px(self.ui_scale, 800), scaling.px(self.ui_scale, 600))
                 
                 self.plot_widget = pg.PlotWidget()
+                try:
+                    self.plot_widget.getPlotItem().getViewBox().sigXRangeChanged.connect(
+                        self._on_plot_xrange_changed)
+                except Exception:
+                    pass
                 
                 # Set initial plot title
                 self.update_plot_title()
