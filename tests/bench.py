@@ -17,7 +17,7 @@ if os.path.exists(sg.SETTINGS_FILE):
 
 root = tk.Tk()
 app = sg.SerialGUI(root)
-app.notebook.select(1)
+app.notebook.select(app.plot_frame)
 root.update()
 
 # --- 1. serial monitor throughput ------------------------------------------
