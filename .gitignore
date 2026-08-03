@@ -35,3 +35,6 @@ tests/logs/
 
 # Notepad tab output
 notes/
+
+# ZMODEM downloads
+downloads/

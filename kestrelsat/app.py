@@ -45,6 +45,7 @@ from .themes import (
 )
 from .channels import Channel
 from . import scaling
+from . import zmodem
 from .theming import ThemeManager
 from .widgets import ToolTip
 
@@ -117,6 +118,13 @@ class SerialGUI:
         self._rx_drop_reported = False
         self._log_dirty = False
         self._log_error_reported = False
+
+        # ZMODEM file transfer
+        self.zmodem_enabled = bool(self.settings.get('zmodem_enabled', True))
+        self._transfer_active = threading.Event()
+        self._transfer_cancel = None
+        self._transfer_thread = None
+        self._transfer_dialog = None
         self._plot_error_reported = False
         # Tracks whether each curve currently holds data, so hidden curves are
         # cleared once rather than on every frame.
@@ -196,6 +204,8 @@ class SerialGUI:
         os.makedirs(self.logs_dir, exist_ok=True)
         self.notes_dir = os.path.join(os.getcwd(), "notes")
         os.makedirs(self.notes_dir, exist_ok=True)
+        self.downloads_dir = os.path.join(os.getcwd(), "downloads")
+        os.makedirs(self.downloads_dir, exist_ok=True)
         
         # Setup GUI
         self.setup_gui()
@@ -273,6 +283,9 @@ class SerialGUI:
         # File menu
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Send File (ZMODEM)...", command=self.send_file_zmodem)
+        file_menu.add_command(label="Receive File (ZMODEM)...", command=self.receive_file_zmodem)
+        file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self.on_closing, accelerator="Ctrl+Q")
         
         # Options menu
@@ -479,6 +492,15 @@ class SerialGUI:
         next_theme = cycle_order[(idx + 1) % len(cycle_order)]
         self.theme_var.set(next_theme)
         self.on_theme_selected()
+
+    def on_zmodem_toggled(self):
+        """Enable or disable ZMODEM, and persist the choice."""
+        self.zmodem_enabled = bool(self.zmodem_var.get())
+        self._write_settings({'zmodem_enabled': self.zmodem_enabled})
+        self.log_message(
+            "ZMODEM file transfer enabled." if self.zmodem_enabled else
+            "ZMODEM file transfer disabled - incoming offers will be ignored.",
+            "SYSTEM")
 
     def _on_theme_applied(self, c: Dict[str, Any]):
         """Fixups the generic widget walk cannot cover. Order matters."""
@@ -1033,6 +1055,8 @@ class SerialGUI:
         self.is_connected = False
         self.test_mode = False
         self.stop_reading.set()
+        if self._transfer_active.is_set() and self._transfer_cancel is not None:
+            self._transfer_cancel.set()
         self.serial_buffer = ""  # Clear buffer on disconnect
         self.first_line_received = False  # Reset first line flag
 
@@ -1075,6 +1099,12 @@ class SerialGUI:
 
         while not stop_event.is_set() and self.is_connected:
             try:
+                # A ZMODEM transfer needs the port to itself: two readers would
+                # each get half the protocol frames. Idle until it is done.
+                if self._transfer_active.is_set():
+                    time.sleep(0.05)
+                    continue
+
                 pending = conn.in_waiting  # one syscall, not two
                 if pending > 0:
                     data = conn.read(pending)
@@ -1135,6 +1165,8 @@ class SerialGUI:
                 self.display_received_data(payload)
             elif kind == 'log':
                 self.log_message(payload[0], payload[1])
+            elif kind == 'zmodem':
+                self._on_transfer_event(payload)
             elif kind == 'error':
                 self.handle_connection_error()
                 break  # disconnected; anything still queued is stale
@@ -1147,6 +1179,223 @@ class SerialGUI:
 
         self._rx_timer = self.root.after(self.RX_PUMP_INTERVAL_MS, self._pump_rx)
     
+    # ------------------------------------------------------------------
+    # ZMODEM file transfer
+    # ------------------------------------------------------------------
+    #
+    # Transfers run on their own thread with exclusive use of the port: the
+    # reader thread idles on _transfer_active so the two do not each consume
+    # half the protocol frames. Progress comes back through the same queue as
+    # serial data, so all widget updates still happen on the Tk thread.
+
+    def _auto_receive(self, offset):
+        """Start receiving because the far end offered a file.
+
+        Everything before the offer is ordinary output and still belongs in the
+        monitor; everything from the offer onwards is protocol and is handed to
+        the receiver, since those bytes are already out of the port.
+        """
+        before = self.serial_buffer[:offset]
+        protocol = self.serial_buffer[offset:].encode("latin-1")
+        self.serial_buffer = ""
+
+        if before.strip():
+            self.log_lines([line for line in before.splitlines() if line], "RECEIVED")
+
+        if self.test_mode or self.serial_connection is None:
+            return  # nothing real to talk to
+
+        self.log_message(
+            f"ZMODEM: incoming file detected, receiving into {self.downloads_dir}",
+            "SYSTEM")
+        self._begin_transfer("receive", dest=self.downloads_dir, prefix=protocol)
+
+    def _transfer_ready(self, action):
+        """True if a transfer can start now; explains itself if not."""
+        if not self.zmodem_enabled:
+            messagebox.showinfo(
+                "ZMODEM disabled",
+                "File transfer is turned off.\n\n"
+                "Enable it under Options > Preferences > File Transfer.")
+            return False
+        if not self.is_connected:
+            messagebox.showerror("Not connected", f"Connect to a port before {action}.")
+            return False
+        if self.test_mode:
+            messagebox.showinfo(
+                "TEST MODE",
+                "TEST MODE simulates telemetry and has no real serial port, "
+                "so files cannot be transferred.")
+            return False
+        if self._transfer_active.is_set():
+            messagebox.showinfo("Transfer in progress",
+                                "Wait for the current transfer to finish.")
+            return False
+        return True
+
+    def send_file_zmodem(self):
+        """Pick one or more files and send them with ZMODEM."""
+        if not self._transfer_ready("sending a file"):
+            return
+        paths = filedialog.askopenfilenames(title="Send file(s) with ZMODEM")
+        if not paths:
+            return
+        total = sum(os.path.getsize(p) for p in paths)
+        self.log_message(
+            f"ZMODEM: sending {len(paths)} file(s), {total} bytes. "
+            "Start a receive on the other end if it is not automatic.", "SYSTEM")
+        self._begin_transfer("send", paths=list(paths))
+
+    def receive_file_zmodem(self):
+        """Wait for the far end to send a file."""
+        if not self._transfer_ready("receiving a file"):
+            return
+        dest = filedialog.askdirectory(
+            title="Save received file(s) to", initialdir=self.downloads_dir)
+        if not dest:
+            return
+        self.log_message(f"ZMODEM: waiting for a file into {dest}", "SYSTEM")
+        self._begin_transfer("receive", dest=dest)
+
+    def _begin_transfer(self, direction, paths=None, dest=None, prefix=b""):
+        self._transfer_cancel = threading.Event()
+        self._transfer_active.set()
+        self._show_transfer_dialog(direction)
+
+        self._transfer_thread = threading.Thread(
+            target=self._run_transfer,
+            args=(direction, paths, dest, prefix),
+            daemon=True)
+        self._transfer_thread.start()
+
+    def _run_transfer(self, direction, paths, dest, prefix):
+        """Worker thread. Must not touch a widget - post events instead."""
+        # The reader polls every 10ms with a 100ms port timeout, so give it a
+        # moment to notice _transfer_active and let go of the port.
+        time.sleep(0.2)
+
+        port = self.serial_connection
+        try:
+            if port is None:
+                raise zmodem.ZModemError("serial port is not open")
+
+            def progress(**kw):
+                self._post_rx(('zmodem', dict(kw, event="progress")))
+
+            if direction == "send":
+                engine = zmodem.ZModemSender(
+                    port, progress=progress, cancel=self._transfer_cancel)
+                done = engine.send(paths)
+                self._post_rx(('zmodem', {
+                    "event": "finished", "direction": "send",
+                    "files": [os.path.basename(p) for p in done]}))
+            else:
+                engine = zmodem.ZModemReceiver(
+                    port, dest, progress=progress, cancel=self._transfer_cancel)
+                if prefix:
+                    engine.link.push_back(prefix)
+                written = engine.receive()
+                self._post_rx(('zmodem', {
+                    "event": "finished", "direction": "receive",
+                    "files": [os.path.basename(p) for p in written],
+                    "dest": dest}))
+        except zmodem.ZModemCancelled as exc:
+            self._post_rx(('zmodem', {"event": "cancelled", "detail": str(exc)}))
+        except Exception as exc:  # noqa: BLE001 - surfaced in the UI below
+            self._post_rx(('zmodem', {"event": "failed", "detail": str(exc)}))
+        finally:
+            self._transfer_active.clear()
+            self._post_rx(('zmodem', {"event": "closed"}))
+
+    # -- progress dialog ---------------------------------------------------
+    def _show_transfer_dialog(self, direction):
+        title = "Sending file" if direction == "send" else "Receiving file"
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"ZMODEM - {title}")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.geometry("+{}+{}".format(self.root.winfo_rootx() + 80,
+                                        self.root.winfo_rooty() + 80))
+        dialog.protocol("WM_DELETE_WINDOW", self.cancel_transfer)
+
+        frame = ttk.Frame(dialog, padding="12")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        self._transfer_name_var = tk.StringVar(value="Waiting for the other end...")
+        ttk.Label(frame, textvariable=self._transfer_name_var).pack(anchor=tk.W)
+
+        self._transfer_bar = ttk.Progressbar(frame, mode="indeterminate", length=320)
+        self._transfer_bar.pack(fill=tk.X, pady=(8, 4))
+        self._transfer_bar.start(15)
+
+        self._transfer_detail_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=self._transfer_detail_var,
+                  foreground=themes.CURRENT["fg_muted"]).pack(anchor=tk.W)
+
+        ttk.Button(frame, text="Cancel", command=self.cancel_transfer).pack(pady=(10, 0))
+
+        self._transfer_dialog = dialog
+        self.themes.restyle(dialog)
+
+    def cancel_transfer(self):
+        """Ask the running transfer to stop."""
+        if self._transfer_cancel is not None:
+            self._transfer_cancel.set()
+        if self._transfer_dialog is not None:
+            self._transfer_detail_var.set("Cancelling...")
+
+    def _close_transfer_dialog(self):
+        if self._transfer_dialog is not None:
+            try:
+                self._transfer_bar.stop()
+                self._transfer_dialog.destroy()
+            except tk.TclError:
+                pass
+            self._transfer_dialog = None
+
+    def _on_transfer_event(self, info):
+        """Handle a transfer message on the Tk thread."""
+        event = info.get("event")
+
+        if event == "progress" and self._transfer_dialog is not None:
+            name = info.get("name", "")
+            total = info.get("total") or 0
+            done = info.get("sent", info.get("received", 0)) or 0
+            self._transfer_name_var.set(name or "Transferring...")
+            if total > 0:
+                if str(self._transfer_bar.cget("mode")) != "determinate":
+                    self._transfer_bar.stop()
+                    self._transfer_bar.configure(mode="determinate", maximum=total)
+                self._transfer_bar.configure(value=done)
+                self._transfer_detail_var.set(
+                    f"{done:,} of {total:,} bytes ({done * 100 // max(total, 1)}%)")
+            else:
+                self._transfer_detail_var.set(f"{done:,} bytes")
+
+        elif event == "finished":
+            names = info.get("files") or []
+            if info["direction"] == "send":
+                text = (f"ZMODEM: sent {', '.join(names)}" if names
+                        else "ZMODEM: the other end skipped every file")
+            else:
+                text = (f"ZMODEM: received {', '.join(names)} into {info.get('dest')}"
+                        if names else "ZMODEM: no files received")
+            self.log_message(text, "SYSTEM")
+
+        elif event == "cancelled":
+            self.log_message(f"ZMODEM: transfer cancelled ({info.get('detail')})", "ERROR")
+
+        elif event == "failed":
+            self.log_message(f"ZMODEM: transfer failed - {info.get('detail')}", "ERROR")
+            messagebox.showerror("Transfer failed",
+                                 f"ZMODEM transfer failed:\n\n{info.get('detail')}")
+
+        elif event == "closed":
+            # Ignore a late 'closed' from a previous transfer if another has
+            # already started - it would otherwise kill the new dialog.
+            if not self._transfer_active.is_set():
+                self._close_transfer_dialog()
+
     def handle_connection_error(self):
         """Handle connection errors"""
         self.disconnect()
@@ -1164,6 +1413,16 @@ class SerialGUI:
                 # Decode and add to buffer
                 new_text = data.decode('utf-8', errors='replace')
                 self.serial_buffer += new_text
+
+                # A sender running sz announces itself with a ZRQINIT header.
+                # Spotting it here is what makes a download start by itself,
+                # and is the behaviour the Preferences toggle governs.
+                if self.zmodem_enabled and not self._transfer_active.is_set():
+                    offer = self.serial_buffer.find(
+                        zmodem.RECEIVE_OFFER.decode("latin-1"))
+                    if offer >= 0:
+                        self._auto_receive(offer)
+                        return
 
                 # A device that never sends a newline (wrong baud rate, binary
                 # data, or CR-only line endings) would otherwise grow this
@@ -1496,7 +1755,8 @@ class SerialGUI:
             'parity': 'None',
             'stop_bits': 1,
             'theme': DEFAULT_THEME,
-            'ui_scale': 'auto'
+            'ui_scale': 'auto',
+            'zmodem_enabled': True
         }
 
         try:
@@ -1570,6 +1830,14 @@ class SerialGUI:
                 except Exception:
                     pass
                 setattr(self, attr, None)
+
+        # Stop any transfer before the port closes underneath it.
+        if self._transfer_active.is_set():
+            if self._transfer_cancel is not None:
+                self._transfer_cancel.set()
+            if self._transfer_thread is not None:
+                self._transfer_thread.join(timeout=2.0)
+            self._transfer_active.clear()
 
         if self.logging_active:
             self.stop_logging()
@@ -1656,8 +1924,26 @@ class SerialGUI:
                   foreground=themes.CURRENT["fg_muted"]).grid(
                       row=1, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
 
+        transfer_frame = ttk.LabelFrame(main_frame, text="File Transfer", padding="10")
+        transfer_frame.grid(row=3, column=0, sticky=tk.EW, pady=(12, 0))
+
+        self.zmodem_var = tk.BooleanVar(value=self.zmodem_enabled)
+        zmodem_check = ttk.Checkbutton(
+            transfer_frame, text="Enable ZMODEM file transfer",
+            variable=self.zmodem_var, command=self.on_zmodem_toggled)
+        zmodem_check.grid(row=0, column=0, sticky=tk.W)
+        ToolTip(zmodem_check,
+                "Adds Send/Receive File to the File menu, and starts a download "
+                "automatically when the connected device offers a file. Turn off "
+                "if a device sends data that resembles a ZMODEM header.")
+
+        ttk.Label(transfer_frame,
+                  text="Received files are saved to the downloads folder.",
+                  foreground=themes.CURRENT["fg_muted"]).grid(
+                      row=1, column=0, sticky=tk.W, pady=(6, 0))
+
         ttk.Button(main_frame, text="Close", command=dialog.destroy).grid(
-            row=3, column=0, pady=(12, 0))
+            row=4, column=0, pady=(12, 0))
 
         self.themes.restyle(dialog)
 

@@ -21,6 +21,8 @@ interactive rendering of live data.
   display captures
 - **Appearance Themes**: Dark, Light, and High Contrast, applied instantly without restarting
 - **High-DPI Aware**: Scales itself to stay readable on 4K and other high-resolution displays
+- **ZMODEM File Transfer**: Send and receive files over the same serial link, compatible with
+  `sz`/`rz`, TeraTerm, minicom and other standard ZMODEM tools
 - **Status Bar**: Connection status and samples-per-second
 
 ## Requirements
@@ -137,6 +139,27 @@ Two situations are handled, and they are not the same problem:
 Changing the setting resizes text immediately. The window itself and the connection
 indicator take their new size on the next start.
 
+### File Transfer (ZMODEM)
+Files can be moved over the same serial connection the telemetry uses, so a board with a
+ZMODEM-capable bootloader or shell can be loaded and read back without a second cable.
+
+- **File → Send File (ZMODEM)…** picks one or more files and sends them.
+- **File → Receive File (ZMODEM)…** waits for the far end to offer a file and asks where to put it.
+- **Automatic downloads**: when the connected device starts a transfer (for example by running
+  `sz`), the app recognises the offer in the incoming stream and receives into `downloads/`
+  without being asked.
+
+The implementation is interoperable with the standard tools — it is tested directly against
+`sz` and `rz` in both directions.
+
+Turn it off under **Options → Preferences → File Transfer**. It is on by default; disabling it
+removes the automatic download behaviour, which is worth doing if a device happens to emit data
+that resembles a ZMODEM header. The menu entries then explain that it is disabled rather than
+disappearing.
+
+A transfer takes exclusive use of the port for its duration, so the serial monitor pauses while
+one is running and resumes afterwards.
+
 ### Display Options
 - **Timestamps**: Add time stamps to all messages
 - **Auto-scroll**: Automatically scroll to show newest data
@@ -186,6 +209,8 @@ kestrelsat/
     themes.py                  # Theme palettes (imports nothing else)
     theming.py                 # ThemeManager: applies a theme to the widget tree
     channels.py                # Channel record
+    scaling.py                 # High-DPI display scaling
+    zmodem.py                  # ZMODEM file transfer protocol
     widgets.py                 # ToolTip
 tests/                         # See tests/README.md
 check_ports.py                 # Standalone serial port lister
@@ -196,6 +221,7 @@ serial_gui_settings.example.json  # Example settings file
 README.md                      # This file
 serial_gui_settings.json       # Auto-generated settings (created after first use)
 logs/                          # Auto-generated default folder for log files
+downloads/                     # Auto-generated default folder for received files
 ```
 
 `serial_gui.py` stays the entry point, so the PyInstaller spec needs no changes
