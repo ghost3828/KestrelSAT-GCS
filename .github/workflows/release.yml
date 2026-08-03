@@ -26,14 +26,24 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
+          python -m pip install pyinstaller pillow
 
-      - name: Check the version matches the tag
-        # Catches the classic mistake of tagging without bumping __init__.py.
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Determine version
+        id: version
         shell: pwsh
         run: |
           $pkg = python -c "import kestrelsat; print(kestrelsat.__version__)"
+          Write-Host "package version: $pkg"
+          "version=$pkg" >> $env:GITHUB_OUTPUT
+
+      - name: Check the version matches the tag
+        # Catches the classic mistake of tagging without bumping __init__.py.
+        # Only meaningful for an actual tag push - a manual workflow_dispatch
+        # run has no tag to compare against.
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $pkg = "${{ steps.version.outputs.version }}"
           $tag = "${{ github.ref_name }}".TrimStart("v")
           Write-Host "package=$pkg tag=$tag"
           if ($pkg -ne $tag) {
@@ -62,7 +72,12 @@ jobs:
           path: dist/KestrelSAT_GCS.exe
 
       - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # Also covers workflow_dispatch: action-gh-release will create the
+        # release/tag from tag_name if it doesn't already exist, or attach to
+        # it if it does - so a manual run against main can (re-)publish the
+        # exe for a release that already exists (e.g. after a build failure)
+        # without needing a new tag push.
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
           files: dist/KestrelSAT_GCS.exe
