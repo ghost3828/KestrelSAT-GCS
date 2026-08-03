@@ -45,6 +45,7 @@ from .themes import (
 )
 from .channels import Channel
 from . import scaling
+from . import __version__
 from . import zmodem
 from .theming import ThemeManager
 from .widgets import ToolTip
@@ -86,7 +87,8 @@ class SerialGUI:
         self.ui_font_bold = scaling.derive_font(root, weight="bold")
         self.ui_font_small_bold = scaling.derive_font(root, weight="bold", size_delta=-1)
 
-        self.root.title("USAFA ASTRO - KestrelSAT Ground Control Station v3.0.0")
+        self.root.title(
+            f"USAFA ASTRO - KestrelSAT Ground Control Station v{__version__}")
         self.root.geometry(scaling.scale_geometry(self.BASE_GEOMETRY, self.ui_scale))
         self.root.resizable(True, True)
 
@@ -1974,9 +1976,9 @@ class SerialGUI:
     
     def show_about(self):
         """Show about dialog"""
-        about_text = """KestrelSAT Ground Control Station
+        about_text = f"""KestrelSAT Ground Control Station
         
-Version: 3.0.0
+Version: {__version__}
 Created by Lt Col Wyatt Harris, US Air Force Academy
 
 A comprehensive GUI for serial port communication with advanced real-time plotting.

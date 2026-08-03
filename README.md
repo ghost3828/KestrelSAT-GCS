@@ -171,14 +171,20 @@ one is running and resumes afterwards.
 
 ## Building a Windows executable
 
-`build_exe.bat` runs PyInstaller against the project's `.venv`, or build from the spec:
+Locally, `build_exe.bat` runs PyInstaller against the project's `.venv`, or build from
+the spec directly:
 
 ```bat
 pyinstaller KestrelSAT_GCS_v1.spec
 ```
 
-The result lands in `dist/`. Themes are defined in the source, so no extra data files need
-to be bundled.
+The result is a single `dist/KestrelSAT_GCS.exe` with the icon and splash screen bundled.
+
+Releases are built by GitHub Actions instead: pushing a `v*` tag runs
+`.github/workflows/release.yml` on a Windows runner and attaches the executable to the
+release. PyInstaller does not cross-compile, so the build has to happen on Windows —
+this keeps that off anyone's laptop. The workflow also fails the build if the tag does
+not match `kestrelsat.__version__`.
 
 ## Troubleshooting
 

@@ -1,0 +1,68 @@
+name: Build Windows executable
+
+# PyInstaller does not cross-compile - it produces a binary for whatever OS it
+# runs on - so the Windows .exe has to be built on a Windows runner.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:        # so a build can be triggered without tagging
+
+permissions:
+  contents: write           # needed to attach the exe to a release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Check the version matches the tag
+        # Catches the classic mistake of tagging without bumping __init__.py.
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $pkg = python -c "import kestrelsat; print(kestrelsat.__version__)"
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          Write-Host "package=$pkg tag=$tag"
+          if ($pkg -ne $tag) {
+            Write-Error "Version mismatch: kestrelsat.__version__ is $pkg but the tag is $tag"
+            exit 1
+          }
+
+      - name: Run the tests that do not need a display
+        run: python tests/test_themes.py
+
+      - name: Build
+        run: python -m PyInstaller KestrelSAT_GCS_v1.spec
+
+      - name: Confirm it is a Windows executable
+        shell: pwsh
+        run: |
+          $exe = "dist/KestrelSAT_GCS.exe"
+          if (-not (Test-Path $exe)) { Write-Error "build produced no exe"; exit 1 }
+          $size = (Get-Item $exe).Length
+          Write-Host "KestrelSAT_GCS.exe is $([math]::Round($size/1MB,1)) MB"
+          if ($size -lt 5MB) { Write-Error "exe is implausibly small"; exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KestrelSAT_GCS-${{ github.ref_name }}
+          path: dist/KestrelSAT_GCS.exe
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/KestrelSAT_GCS.exe
