@@ -67,14 +67,14 @@ base_settings = {"theme": "dark", "ui_scale": "1.0"}
 root, app = fresh(base_settings)
 small_default = tkfont.nametofont("TkDefaultFont", root=root).cget("size")
 small_label_h = app.conn_status_label.winfo_reqheight()
-small_btn_w = app.show_plot_btn.winfo_reqwidth()
+small_btn_w = app.plots[0].show_plot_btn.winfo_reqwidth()
 small_geom = root.geometry().split("+")[0]
 app.on_closing()
 
 root, app = fresh({"theme": "dark", "ui_scale": "2.0"})
 big_default = tkfont.nametofont("TkDefaultFont", root=root).cget("size")
 big_label_h = app.conn_status_label.winfo_reqheight()
-big_btn_w = app.show_plot_btn.winfo_reqwidth()
+big_btn_w = app.plots[0].show_plot_btn.winfo_reqwidth()
 big_geom = root.geometry().split("+")[0]
 
 check(abs(big_default) > abs(small_default),

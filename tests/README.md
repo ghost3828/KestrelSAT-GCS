@@ -7,6 +7,7 @@ display. On Linux use `xvfb`; on Windows they run directly.
 |---|---|---|
 | `test_themes.py` | Theme table: token parity across the three themes, colour format, WCAG contrast ratios. Parses `serial_gui.py` with `ast`, so it imports nothing. | no |
 | `test_scaling.py` | High-DPI scaling: detection, font/geometry scaling, the Preferences round-trip, and that repeated application does not compound. | yes |
+| `test_multiplot.py` | Multiple plot tabs: the default layout and `+` tab, adding and removing plots, renumbering (tabs and window titles), that every plot sees every line, and that configuration, data, clearing and sample numbering stay independent. | yes |
 | `test_correctness.py` | Regression tests for the crash and data-loss fixes: TEST MODE, tab delimiter, buffer cap, disconnect with a failing `close()`, timer cancellation, tooltips on buttons, channel cap, channel cleanup, legend consistency. | yes |
 | `test_zmodem.py` | ZMODEM: CRC check values, every escape rule, round trips 0B-40KB, **interoperability against lrzsz's `sz`/`rz`** over a pty in both directions, and a full transfer driven through the app with its reader thread running. Interop is skipped if `sz`/`rz` are absent. | yes |
 | `test_smoke.py` | Builds the whole UI, cycles all three themes, opens every dialog, checks settings persistence. | yes |

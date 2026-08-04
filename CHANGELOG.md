@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+**Multiple plots.** The Plot tab is now `Plot 1`, with a `+` tab beside it that adds
+`Plot 2`, `Plot 3`, and so on - each with its own pop-out window titled "Serial Plot N".
+
+Every plot is configured independently: its own delimiter, buffer and plot sizes, x-axis
+selection, axis labels, title, and per-channel colours, names and visibility. Pausing or
+clearing one plot leaves the others alone, and sample numbering is per plot so clearing
+one does not shift another's x-axis. All plots parse every incoming line themselves, so
+by default they show the same data - what differs is how each is set up to display it.
+
+"Remove This Plot" closes one and renumbers the rest; the last plot cannot be removed.
+Up to 12 plots. With four plots open the receive path still sustains ~80,000 lines/s.
+
+### Under the hood
+
+The ~1,400 lines of per-plot logic moved out of `SerialGUI` into a `PlotTab` class in
+`kestrelsat/plotting.py`, so plot state is per instance rather than per application.
+
 ## v3.1.0
 
 The headline features are ZMODEM file transfer, high-DPI support and selectable

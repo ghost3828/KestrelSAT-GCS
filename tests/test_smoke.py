@@ -29,15 +29,15 @@ root.update()
 
 # synthetic channels -> exercises add_channel_control + swatches
 for n in range(3):
-    app.update_plot_channels({"Temp": 20.0 + n, "Sine": n * 0.5, "Noise": n}, n)
+    app.plots[0].update_plot_channels({"Temp": 20.0 + n, "Sine": n * 0.5, "Noise": n}, n)
 root.update()
-print("channels:", sorted(app.channels))
-print("colors  :", {k: app.channels[k].color for k in sorted(app.channels)})
+print("channels:", sorted(app.plots[0].channels))
+print("colors  :", {k: app.plots[0].channels[k].color for k in sorted(app.plots[0].channels)})
 
 # pin one channel by hand; it must survive theme switches
-app.channels["Sine"].color = "#123456"
-app.channels["Sine"].color_is_user = True
-app.update_color_button_appearance("Sine")
+app.plots[0].channels["Sine"].color = "#123456"
+app.plots[0].channels["Sine"].color_is_user = True
+app.plots[0].update_color_button_appearance("Sine")
 
 for name in sg.THEME_ORDER:
     app.theme_var.set(name)
@@ -51,12 +51,12 @@ for name in sg.THEME_ORDER:
     assert app.status_canvas.itemcget(app.status_circle, "fill") == c["error"]
     assert str(app.log_status_label.cget("foreground")) == c["error"]
     assert app.plot_colors == c["plot_palette"]
-    assert app.channels["Sine"].color == "#123456", "user colour was clobbered"
-    assert app.channels["Temp"].color == c["plot_palette"][app.channels["Temp"].color_index]
-    swatch = app.channels["Temp"].color_btn
-    assert swatch.cget("bg") == app.channels["Temp"].color
+    assert app.plots[0].channels["Sine"].color == "#123456", "user colour was clobbered"
+    assert app.plots[0].channels["Temp"].color == c["plot_palette"][app.plots[0].channels["Temp"].color_index]
+    swatch = app.plots[0].channels["Temp"].color_btn
+    assert swatch.cget("bg") == app.plots[0].channels["Temp"].color
     assert json.load(open(sg.SETTINGS_FILE))["theme"] == name
-    print("  %-14s ok  (bg=%s, Temp=%s)" % (name, c["bg"], app.channels["Temp"].color))
+    print("  %-14s ok  (bg=%s, Temp=%s)" % (name, c["bg"], app.plots[0].channels["Temp"].color))
 
 # connection indicator uses the ok colours
 app.update_status_indicator(True)
@@ -86,9 +86,9 @@ assert "baud_rate" in data, data
 print("settings merge ok:", data)
 
 # clearing plot data must rebuild the channel frame cleanly
-app.clear_plot_data()
+app.plots[0].clear_plot_data()
 root.update()
-assert app.channels == {}
+assert app.plots[0].channels == {}
 print("clear_plot_data ok")
 
 # menu colours

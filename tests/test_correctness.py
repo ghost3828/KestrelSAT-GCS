@@ -48,8 +48,8 @@ app.connect()
 # released by the actual event loop. (That coupling is finding T1.1.)
 root.after(2500, root.quit)
 root.mainloop()
-check(sorted(app.channels) == ["SENSOR_A", "SENSOR_B", "TIME"],
-      "TEST MODE created channels: %s" % sorted(app.channels))
+check(sorted(app.plots[0].channels) == ["SENSOR_A", "SENSOR_B", "TIME"],
+      "TEST MODE created channels: %s" % sorted(app.plots[0].channels))
 check(len(app.serial_buffer) < 200,
       "serial_buffer is drained, not accumulating (len=%d)" % len(app.serial_buffer))
 app.on_closing()
@@ -57,14 +57,14 @@ app.on_closing()
 # --- T0.2: the Tab delimiter was a literal backslash-t ---------------------
 print("T0.2 tab delimiter splits real tabs")
 root, app = make_app()
-app.delimiter_var.set("tab")
-app.update_delimiter()
-check(app.delimiter == "\t", "delimiter is a real tab, not %r" % app.delimiter)
+app.plots[0].delimiter_var.set("tab")
+app.plots[0].update_delimiter()
+check(app.plots[0].delimiter == "\t", "delimiter is a real tab, not %r" % app.plots[0].delimiter)
 app.display_received_data(b"A:1\tB:2\tC:3\n")
 app.display_received_data(b"A:4\tB:5\tC:6\n")
 root.update()
-check(sorted(app.channels) == ["A", "B", "C"],
-      "tab-separated line split into channels: %s" % sorted(app.channels))
+check(sorted(app.plots[0].channels) == ["A", "B", "C"],
+      "tab-separated line split into channels: %s" % sorted(app.plots[0].channels))
 app.on_closing()
 
 # --- T0.2/A2: buffer cap ---------------------------------------------------
@@ -148,8 +148,8 @@ huge = ",".join(str(i) for i in range(5000)) + "\n"
 app.display_received_data(huge.encode())
 app.display_received_data(huge.encode())
 root.update()
-check(len(app.channels) <= app.MAX_CHANNELS,
-      "channels capped at %d (is %d)" % (app.MAX_CHANNELS, len(app.channels)))
+check(len(app.plots[0].channels) <= app.MAX_CHANNELS,
+      "channels capped at %d (is %d)" % (app.MAX_CHANNELS, len(app.plots[0].channels)))
 app.on_closing()
 
 # --- T3.3: per-channel attributes are released on clear --------------------
@@ -166,12 +166,12 @@ def channel_attrs():
 
 for cycle in range(5):
     for n in range(3):
-        app.update_plot_channels({"Ch%d_%d" % (cycle, i): float(i) for i in range(4)}, n)
+        app.plots[0].update_plot_channels({"Ch%d_%d" % (cycle, i): float(i) for i in range(4)}, n)
     root.update()
-    app.clear_plot_data()
+    app.plots[0].clear_plot_data()
     root.update()
 check(channel_attrs() == [], "no leaked per-channel attributes (found %d)" % len(channel_attrs()))
-check(app.channels == {}, "channel registry empty after clear (%d left)" % len(app.channels))
+check(app.plots[0].channels == {}, "channel registry empty after clear (%d left)" % len(app.plots[0].channels))
 app.on_closing()
 
 # --- T3.2: legend consistency, fixed by the shared helpers -----------------
@@ -179,23 +179,23 @@ if sg.PYQTGRAPH_AVAILABLE:
     print("T3.2 legend stays consistent")
     root, app = make_app()
     for n in range(3):
-        app.update_plot_channels({"A": 1.0 + n, "B": 2.0 + n, "C": 3.0 + n}, n)
+        app.plots[0].update_plot_channels({"A": 1.0 + n, "B": 2.0 + n, "C": 3.0 + n}, n)
     root.update()
-    app.show_plot_window()
+    app.plots[0].show_plot_window()
     root.update()
 
     def legend_names():
-        return sorted(lbl.text for _s, lbl in app.plot_legend.items)
+        return sorted(lbl.text for _s, lbl in app.plots[0].plot_legend.items)
 
     check(legend_names() == ["A", "B", "C"], "all channels in legend: %s" % legend_names())
 
     # Hide B, then rename A. Renaming used to rebuild the legend without the
     # visibility filter, so B reappeared.
-    app.toggle_channel_visibility("B", False)
+    app.plots[0].toggle_channel_visibility("B", False)
     root.update()
     check("B" not in legend_names(), "hidden channel dropped from legend: %s" % legend_names())
 
-    app.update_channel_name("A", "Alpha")
+    app.plots[0].update_channel_name("A", "Alpha")
     root.update()
     check("B" not in legend_names(),
           "hidden channel still absent after renaming another: %s" % legend_names())
@@ -205,13 +205,13 @@ if sg.PYQTGRAPH_AVAILABLE:
     app.theme_var.set("dark")
     app.on_theme_selected()
     root.update()
-    app.clear_plot_data()
+    app.plots[0].clear_plot_data()
     root.update()
     # normalise: the constructor stores whatever it was given (a str here),
     # while setLabelTextColor() stores a QColor
     import pyqtgraph as _pg
     expected = _pg.mkColor(sg.THEMES["dark"]["plot_fg"]).name().lower()
-    actual = _pg.mkColor(app.plot_legend.opts["labelTextColor"]).name().lower()
+    actual = _pg.mkColor(app.plots[0].plot_legend.opts["labelTextColor"]).name().lower()
     check(actual == expected,
           "legend themed after clear_plot_data (%s vs %s)" % (actual, expected))
     app.on_closing()

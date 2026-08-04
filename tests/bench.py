@@ -17,7 +17,7 @@ if os.path.exists(sg.SETTINGS_FILE):
 
 root = tk.Tk()
 app = sg.SerialGUI(root)
-app.notebook.select(app.plot_frame)
+app.notebook.select(app.plots[0].frame)
 root.update()
 
 # --- 1. serial monitor throughput ------------------------------------------
@@ -35,27 +35,27 @@ monitor_lines = int(app.received_text.index('end-1c').split('.')[0])
 print(f"               monitor holds {monitor_lines} lines (cap {app.MAX_MONITOR_LINES})")
 
 # --- 2. channel creation (the O(N^2) restyle) ------------------------------
-app.clear_plot_data()
+app.plots[0].clear_plot_data()
 root.update()
 N_CH = 32
 t0 = time.perf_counter()
 for n in range(2):
-    app.update_plot_channels({f"Ch{i:02d}": float(i) for i in range(N_CH)}, n)
+    app.plots[0].update_plot_channels({f"Ch{i:02d}": float(i) for i in range(N_CH)}, n)
 root.update()
 t1 = time.perf_counter()
 print(f"add {N_CH} channels: {t1 - t0:.3f}s")
 
 # --- 3. redraw ------------------------------------------------------------
 if sg.PYQTGRAPH_AVAILABLE:
-    app.show_plot_window()
+    app.plots[0].show_plot_window()
     root.update()
     for n in range(1000):
-        app.update_plot_channels({f"Ch{i:02d}": float(i + n) for i in range(8)}, n)
+        app.plots[0].update_plot_channels({f"Ch{i:02d}": float(i + n) for i in range(8)}, n)
     root.update()
     FRAMES = 500
     t0 = time.perf_counter()
     for _ in range(FRAMES):
-        app.update_plot_display()
+        app.plots[0].update_plot_display()
     t1 = time.perf_counter()
     per = (t1 - t0) / FRAMES * 1000
     print(f"redraw       : {FRAMES} frames, 8 channels x 1000 samples "

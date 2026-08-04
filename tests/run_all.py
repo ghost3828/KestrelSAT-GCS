@@ -14,6 +14,7 @@ SUITES = [
     "test_themes.py",
     "test_correctness.py",
     "test_scaling.py",
+    "test_multiplot.py",
     "test_zmodem.py",
     "test_smoke.py",
     "test_plot.py",

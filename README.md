@@ -17,6 +17,8 @@ interactive rendering of live data.
 - **Data Transmission**: Send text with optional line endings
 - **Real-time Plotting**: Multi-channel plots with per-channel colours, thickness, dot
   size, custom names, and visibility toggles
+- **Multiple Plots**: Add as many plot tabs as you need with `+`; each has its own
+  window and is configured independently
 - **Logging**: Continuous logging to file with a live file-size readout, plus one-shot
   display captures
 - **Appearance Themes**: Dark, Light, and High Contrast, applied instantly without restarting
@@ -77,7 +79,18 @@ python check_ports.py
 
 ### Plotting
 
-The Plot tab configures the plot; "Show Plot Window" opens it in its own window.
+Each **Plot** tab is one plot. "Show Plot Window" opens it in its own window, titled
+"Serial Plot 1", "Serial Plot 2", and so on.
+
+**Multiple plots.** The app starts with a single `Plot 1` tab and a `+` tab to its right.
+Click `+` to add `Plot 2`, `Plot 3`, and so on, each with its own window. Every plot is
+configured independently - its own delimiter, buffer sizes, axes, title, and per-channel
+colours and visibility - so you can watch the same stream several different ways at once.
+
+Every plot parses every incoming line itself, so all plots see the same data by default;
+what differs is how each one is configured to show it. Clearing or pausing one plot leaves
+the others untouched. "Remove This Plot" closes a plot and discards its data; the last
+remaining plot cannot be removed.
 
 1. **Data format**: send one sample per line as delimited values. Named channels work too,
    for example `Temp:25.5,Humidity:67`. Unnamed values are named `Ch1`, `Ch2`, ... by position.
@@ -211,7 +224,8 @@ not match `kestrelsat.__version__`.
 ```
 serial_gui.py                  # Entry point
 kestrelsat/
-    app.py                     # SerialGUI: window, tabs, dialogs, serial I/O, plotting
+    app.py                     # SerialGUI: window, tabs, dialogs, serial I/O
+    plotting.py                # PlotTab: one plot's tab, data and window
     themes.py                  # Theme palettes (imports nothing else)
     theming.py                 # ThemeManager: applies a theme to the widget tree
     channels.py                # Channel record

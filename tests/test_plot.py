@@ -20,27 +20,27 @@ app = sg.SerialGUI(root)
 root.update()
 
 for n in range(5):
-    app.update_plot_channels({"Temp": 20.0 + n, "Sine": n * 0.5}, n)
+    app.plots[0].update_plot_channels({"Temp": 20.0 + n, "Sine": n * 0.5}, n)
 root.update()
 
 # 1. open the plot window while dark is active
-app.show_plot_window()
+app.plots[0].show_plot_window()
 root.update()
-assert app.plot_widget is not None
-assert app.plot_legend is not None
-print("plot window opened; curves =", sorted(app.channels))
+assert app.plots[0].plot_widget is not None
+assert app.plots[0].plot_legend is not None
+print("plot window opened; curves =", sorted(app.plots[0].channels))
 
 
 def check(theme_name):
     c = sg.THEMES[theme_name]
-    bg = app.plot_widget.backgroundBrush().color().name().lower()
+    bg = app.plots[0].plot_widget.backgroundBrush().color().name().lower()
     assert bg == c["plot_bg"].lower(), (theme_name, bg, c["plot_bg"])
     for axis_name in ("left", "bottom"):
-        ax = app.plot_widget.getAxis(axis_name)
+        ax = app.plots[0].plot_widget.getAxis(axis_name)
         assert ax.pen().color().name().lower() == c["plot_axis"].lower(), \
             (theme_name, axis_name, ax.pen().color().name())
         assert ax.textPen().color().name().lower() == c["plot_fg"].lower()
-    for name, ch in app.channels.items():
+    for name, ch in app.plots[0].channels.items():
         curve = ch.curve
         want = ch.color
         got = curve.opts["pen"].color().name().lower()
@@ -58,42 +58,42 @@ for name in ("light", "high_contrast", "dark"):
     check(name)
 
 # 3. user-picked colour must survive
-app.channels["Sine"].color = "#123456"
-app.channels["Sine"].color_is_user = True
-app._repen_all_curves()
+app.plots[0].channels["Sine"].color = "#123456"
+app.plots[0].channels["Sine"].color_is_user = True
+app.plots[0]._repen_all_curves()
 app.theme_var.set("light")
 app.on_theme_selected()
 root.update()
-assert app.channels["Sine"].color == "#123456"
-assert app.channels["Sine"].curve.opts["pen"].color().name().lower() == "#123456"
+assert app.plots[0].channels["Sine"].color == "#123456"
+assert app.plots[0].channels["Sine"].curve.opts["pen"].color().name().lower() == "#123456"
 print("user colour preserved across switch")
 
 # 4. close the window, switch theme, reopen -> must come back themed
-app.plot_window.close()
+app.plots[0].plot_window.close()
 root.update()
-assert app.plot_widget is None, "closeEvent should null plot_widget"
+assert app.plots[0].plot_widget is None, "closeEvent should null plot_widget"
 app.theme_var.set("high_contrast")
 app.on_theme_selected()
 root.update()
-app.show_plot_window()
+app.plots[0].show_plot_window()
 root.update()
 check("high_contrast")
 print("reopened window is themed")
 
 # 5. labels/title carry the theme colour
-app.update_plot_title()
-app.update_x_axis_label()
-app.update_y_axis_label()
+app.plots[0].update_plot_title()
+app.plots[0].update_x_axis_label()
+app.plots[0].update_y_axis_label()
 root.update()
 
 # 6. clear + rebuild while a theme is active
-app.clear_plot_data()
+app.plots[0].clear_plot_data()
 root.update()
 for n in range(3):
-    app.update_plot_channels({"Alpha": n}, n)
+    app.plots[0].update_plot_channels({"Alpha": n}, n)
 root.update()
-assert app.channels["Alpha"].color == sg.THEMES["high_contrast"]["plot_palette"][0]
-print("clear + re-detect ok:", {k: v.color for k, v in app.channels.items()})
+assert app.plots[0].channels["Alpha"].color == sg.THEMES["high_contrast"]["plot_palette"][0]
+print("clear + re-detect ok:", {k: v.color for k, v in app.plots[0].channels.items()})
 
 app.on_closing()
 print("\nPLOT SMOKE OK")
