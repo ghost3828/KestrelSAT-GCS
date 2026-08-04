@@ -1,6 +1,8 @@
 """Main application window for the KestrelSAT Ground Control Station.
 
 Copyright (C) 2026 Wyatt Harris
+Written in a personal capacity. This is not a work of the United States
+Government and was not prepared in the course of official duties.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -1995,7 +1997,7 @@ class SerialGUI:
         about_text = f"""KestrelSAT Ground Control Station
         
 Version: {__version__}
-Created by Lt Col Wyatt Harris, US Air Force Academy
+Created by Wyatt Harris
 
 A comprehensive GUI for serial port communication with advanced real-time plotting.
 
@@ -2017,6 +2019,8 @@ Built with Python, tkinter, and PyQtGraph for professional data visualization.
 
 License:
 Copyright (C) 2026 Wyatt Harris
+Written in a personal capacity. This is not a work of the United States
+Government and was not prepared in the course of official duties.
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software

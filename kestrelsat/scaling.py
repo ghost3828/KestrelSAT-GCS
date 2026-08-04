@@ -22,6 +22,8 @@ follows along.
 
 
 Copyright (C) 2026 Wyatt Harris
+Written in a personal capacity. This is not a work of the United States
+Government and was not prepared in the course of official duties.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

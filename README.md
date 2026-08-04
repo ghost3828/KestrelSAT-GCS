@@ -262,6 +262,18 @@ the terms of the [GNU General Public License](LICENSE) as published by the Free
 Software Foundation, either version 3 of the License, or (at your option) any
 later version.
 
+### Authorship
+
+This software was written by Wyatt Harris in a personal capacity. It is **not** a
+work of the United States Government, was not prepared in the course of the
+author's official duties, and does not represent the official position of the
+U.S. Air Force Academy, the Department of the Air Force, the Department of
+Defense, or the U.S. Government. Copyright is held personally by the author,
+which is what makes licensing it under the GPL possible.
+
+The USAFA ASTRO course is mentioned only to describe what the program was built
+for; it is not a claim of institutional authorship or ownership.
+
 It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
 without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
 PURPOSE. See the [LICENSE](LICENSE) file for the full terms.
