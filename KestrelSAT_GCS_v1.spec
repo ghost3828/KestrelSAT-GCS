@@ -11,6 +11,9 @@ a = Analysis(
     datas=[
         ('KestrelSAT_logo.png', '.'),
         ('splash_screen.png', '.'),
+        # The GPL requires the licence travel with the binary, so ship it
+        # inside the exe rather than relying on the source repo.
+        ('LICENSE', '.'),
     ] + collect_data_files('pyqtgraph'),
     hiddenimports=[
         'serial.tools.list_ports',

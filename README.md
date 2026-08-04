@@ -255,4 +255,26 @@ See `tests/README.md` for what each suite covers.
 
 ## License
 
-This project is open source. Feel free to modify and distribute as needed.
+Copyright (C) 2026 Wyatt Harris
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the [GNU General Public License](LICENSE) as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE. See the [LICENSE](LICENSE) file for the full terms.
+
+### Why GPL v3 specifically
+
+This is not a free choice: `PyQt5` is distributed by Riverbank Computing under
+the GPL v3 (or a paid commercial licence). Because the plot window links PyQt5,
+a distributed build of this program has to be GPL v3 as well — GPL v2 is *not*
+compatible with GPL v3, so v2 is not an option here.
+
+The other dependencies are permissive and impose no such constraint:
+`pyqtgraph` is MIT and `pyserial` is BSD.
+
+Practically, this means anyone you give the program or the `.exe` to is entitled
+to the corresponding source, under these same terms.

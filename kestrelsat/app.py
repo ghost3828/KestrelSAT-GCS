@@ -1,4 +1,20 @@
-"""Main application window for the KestrelSAT Ground Control Station."""
+"""Main application window for the KestrelSAT Ground Control Station.
+
+Copyright (C) 2026 Wyatt Harris
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, colorchooser
@@ -1997,7 +2013,19 @@ Features:
 • Auto-clear on connect for clean data acquisition
 • Automatic first-line filtering for reliable plots
 
-Built with Python, tkinter, and PyQtGraph for professional data visualization."""
+Built with Python, tkinter, and PyQtGraph for professional data visualization.
+
+License:
+Copyright (C) 2026 Wyatt Harris
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It comes with ABSOLUTELY NO WARRANTY.
+
+See the LICENSE file, or <https://www.gnu.org/licenses/>, for the full terms.
+
+This program links PyQt5, which is itself distributed under the GPL v3."""
 
         self._show_text_dialog("About KestrelSAT Ground Control Station", about_text,
                                width=72, height=24)
