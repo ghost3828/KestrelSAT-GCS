@@ -23,6 +23,45 @@ stamp is never added somewhere you cannot see. The button now reads
 **"Show echo"** next to Add carriage return, on by default: turn it off to stop sent data
 from being echoed into the Serial Monitor display (and log file, if logging).
 
+### Fixed
+
+**Parts of the interface could become permanently unreachable when the window was
+resized.** Measured, not theorised - each of these was reproduced by driving the real
+window and reading widget geometry.
+
+- **"Serial Monitor Controls" disappeared after an 80px drag.** Shrinking the window
+  from 780px to 700px tall collapsed it to 3px; by 560px the whole "Send Data" row -
+  entry, Send button and the option checkboxes - was gone too. Tk's packer allocates
+  cavity space in *packing order*, and both rows were packed after the serial monitor's
+  `expand=True`, so they were handed the leftovers, which reached zero. They are now
+  reserved before the monitor, which absorbs the shrinking instead - it has its own
+  scrollbar, so it loses nothing. Both rows now hold their full height down to 300px.
+- **The Plot tab's rightmost controls could not be reached at all.** Below ~600px wide
+  the "Show Line" toggle and dot-size spinbox were clipped, and the tab scrolled only
+  vertically. The scroll region now scrolls horizontally as well. The "Plot Settings"
+  panel is naturally 1000px wide, so its Apply and Clear Buffer buttons were previously
+  off the right edge even at the default 800px window; they now scroll into view.
+- **The window could open larger than the display.** On a 1080p laptop at 150% Windows
+  scaling the scaled default became 1200x1170 against a work area of roughly 1040px, so
+  the bottom sat below the screen edge before the user touched anything. The launch size
+  is now clamped to the work area, and a minimum window size is computed from the rows
+  that must stay visible - capped against the display, since a minimum bigger than the
+  screen could not be dragged back into range.
+- **Modal dialogs could become impossible to dismiss.** Preferences was non-resizable and
+  modal with no Escape binding, so at high display scale a Close button below the screen
+  edge left no way out but killing the process. Every dialog now closes on Escape, is
+  resizable, and is clamped on-screen. Preferences scrolls, Serial Configuration sizes to
+  its content instead of a fixed 220x150, and the transfer progress bar is scaled rather
+  than a fixed 320px.
+- **Removing a plot tab could silently create a replacement.** Destroying a tab moves the
+  notebook selection, and when it landed on `+` that was treated as a click - so tearing
+  a plot down spawned a new one, including while closing the app.
+
+Scroll regions are now one reusable widget, and the mouse wheel is routed once for the
+whole window rather than each region grabbing it: two regions using the old
+`bind_all`/`unbind_all` pattern would have deleted each other's binding, and a wheel over
+the serial monitor would have scrolled both the monitor and the panel around it.
+
 ### Under the hood
 
 The ~1,400 lines of per-plot logic moved out of `SerialGUI` into a `PlotTab` class in

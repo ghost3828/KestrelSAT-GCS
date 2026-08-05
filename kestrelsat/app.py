@@ -65,7 +65,7 @@ from . import scaling
 from . import __version__
 from . import zmodem
 from .theming import ThemeManager
-from .widgets import ToolTip
+from .widgets import ScrollableFrame, ToolTip
 
 
 class SerialGUI:
@@ -88,8 +88,12 @@ class SerialGUI:
     # Legend placement, negative offset anchors it to the top right.
     LEGEND_OFFSET = (-70, 30)
 
-    # Window size at 100% scale; scaled up on high-DPI displays.
+    # Window size at 100% scale; scaled up on high-DPI displays, then
+    # clamped so it cannot open larger than the display.
     BASE_GEOMETRY = "800x780"
+    # Floor at 100% scale, before it is raised to fit the rows that must
+    # always be visible and capped against the work area.
+    MIN_GEOMETRY = "560x480"
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -107,7 +111,7 @@ class SerialGUI:
 
         self.root.title(
             f"USAFA ASTRO - KestrelSAT Ground Control Station v{__version__}")
-        self.root.geometry(scaling.scale_geometry(self.BASE_GEOMETRY, self.ui_scale))
+        self.root.geometry(self._launch_geometry())
         self.root.resizable(True, True)
 
         # Set window and taskbar icon. Look next to the package, and next to
@@ -127,6 +131,10 @@ class SerialGUI:
         # Shutdown state. Timer ids are kept so on_closing() can cancel them
         # before destroying the root.
         self._closing = False
+        # Set while tabs are being removed programmatically, so the
+        # '+' handler does not mistake the resulting selection change
+        # for a click on '+'.
+        self._suspend_tab_events = False
         self._sps_timer = None
         self._filesize_timer = None
         self._plot_timer = None
@@ -215,6 +223,9 @@ class SerialGUI:
         self.themes.add_listener(self._on_theme_applied)
         self.themes.apply()
 
+        # Widgets and fonts are final, so the pinned rows can be measured.
+        self._apply_window_constraints()
+
         self.update_port_list()
         
         # Initialize status indicator
@@ -301,6 +312,11 @@ class SerialGUI:
             )
 
         options_menu.add_separator()
+        # A second route to adding a plot. ttk.Notebook neither scrolls nor
+        # wraps its tab strip, so with enough plots open on a narrow window the
+        # rightmost tabs - the '+' among them - are clipped and unclickable.
+        options_menu.add_command(label="Add Plot", command=self.add_plot_tab)
+        options_menu.add_separator()
         options_menu.add_command(label="Preferences", command=self.show_preferences)
         options_menu.add_separator()
         options_menu.add_command(label="Reset Settings", command=self.reset_settings)
@@ -376,6 +392,7 @@ class SerialGUI:
         """Create top frame with status and logging controls"""
         top_frame = ttk.Frame(self.root)
         top_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+        self.top_frame = top_frame
         
         # Connection status on the left
         status_outer_frame = ttk.Frame(top_frame)
@@ -525,6 +542,79 @@ class SerialGUI:
 
     # -- plot tabs --------------------------------------------------------
 
+    # -- window sizing ----------------------------------------------------
+
+    def _launch_geometry(self) -> str:
+        """Default size, scaled, then clamped so it fits on the display.
+
+        Nothing used to check this. On a 1080p laptop at 150% Windows scaling
+        the scaled 800x780 becomes 1200x1170 against a work area of roughly
+        1040px, so the bottom of the window opened below the screen edge
+        before the user had touched anything.
+        """
+        scaled = scaling.scale_geometry(self.BASE_GEOMETRY, self.ui_scale)
+        w, h, _, _ = scaling.parse_geometry(scaled)
+        if not w:
+            return scaled
+        area = scaling.work_area(self.root)
+        w, h = scaling.clamp_size((w, h), area)
+        aw, ah = area
+        if aw and ah:
+            # Centre horizontally, a little above centre vertically.
+            return f"{w}x{h}+{max(0, (aw - w) // 2)}+{max(0, (ah - h) // 3)}"
+        return f"{w}x{h}"
+
+    def _compute_min_size(self):
+        """Smallest window that still shows everything that must stay visible.
+
+        Measured from live widgets rather than hardcoded, so it follows the
+        display scale, the theme's padding and the user's font size.
+        """
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+
+        base_w, base_h, _, _ = scaling.parse_geometry(self.MIN_GEOMETRY)
+        w = scaling.px(self.ui_scale, base_w or 560)
+        h = scaling.px(self.ui_scale, base_h or 480)
+
+        def req(attr, dim):
+            widget = getattr(self, attr, None)
+            try:
+                return (widget.winfo_reqwidth() if dim == "w"
+                        else widget.winfo_reqheight()) if widget else 0
+            except tk.TclError:
+                return 0
+
+        # Wide enough for the notebook tab strip and the pinned rows.
+        w = max(w, max(req("top_frame", "w"), req("status_bar", "w"),
+                       req("notebook", "w")) + scaling.px(self.ui_scale, 40))
+
+        # Tall enough for the chrome plus both must-see rows plus a sliver of
+        # the serial monitor, which is what absorbs the shrinking.
+        chrome = sum(req(a, "h") for a in
+                     ("top_frame", "status_bar", "conn_frame",
+                      "send_frame", "control_frame"))
+        h = max(h, chrome + scaling.px(self.ui_scale, 110))
+
+        # A computed minimum can exceed a small high-DPI screen, and a minsize
+        # bigger than the display cannot be dragged back into range - that
+        # would be a worse bug than the one being fixed. Where this cap bites,
+        # the scroll regions are what keep content reachable.
+        return scaling.clamp_size((w, h), scaling.work_area(self.root))
+
+    def _apply_window_constraints(self):
+        """Set the minimum size, and re-fit the window if it now sits below it."""
+        try:
+            mw, mh = self._compute_min_size()
+            self.root.minsize(mw, mh)
+            cw, ch, _, _ = scaling.parse_geometry(self.root.geometry())
+            if cw and (cw < mw or ch < mh):
+                self.root.geometry(f"{max(cw, mw)}x{max(ch, mh)}")
+        except tk.TclError:
+            pass
+
     def create_plot_tabs(self):
         """Create the first plot tab and the '+' tab that adds more."""
         # One QApplication for the whole process, created before any plot
@@ -578,8 +668,12 @@ class SerialGUI:
                 f"Remove {plot.tab_title}? Its data and settings are discarded."):
             return
 
-        self.plots.remove(plot)
-        plot.destroy()
+        self._suspend_tab_events = True
+        try:
+            self.plots.remove(plot)
+            plot.destroy()
+        finally:
+            self._suspend_tab_events = False
         for i, p in enumerate(self.plots, start=1):
             p.renumber(i)
             try:
@@ -589,7 +683,16 @@ class SerialGUI:
         self.notebook.select(self.plots[-1].frame)
 
     def _on_tab_changed(self, event=None):
-        """Turn a click on '+' into a new plot tab."""
+        """Turn a click on '+' into a new plot tab.
+
+        Destroying a tab also fires this: the notebook moves the selection on,
+        and when the destroyed tab was the last real one the selection lands on
+        '+'. Without the guard below that silently re-created the plot the
+        caller was removing - and during shutdown, where on_closing() destroys
+        every plot in turn, it spawned fresh tabs while tearing them down.
+        """
+        if self._closing or self._suspend_tab_events:
+            return
         try:
             current = self.notebook.select()
             if current and self.notebook.nametowidget(current) is self.add_tab_frame:
@@ -632,10 +735,28 @@ class SerialGUI:
 
     
     def create_connection_content(self):
-        """Create all content for the Connection tab"""
+        """Create all content for the Connection tab.
+
+        Order matters, for the same reason it does for the status bar in
+        setup_gui(): Tk's packer hands out cavity space in packing order, so a
+        slave packed after an expand=True sibling gets only the leftovers - and
+        that reaches zero. "Serial Monitor Controls" used to be packed last and
+        collapsed to nothing after shrinking the window by only 80px.
+        Reserving the two must-see rows first leaves the serial monitor, which
+        has its own scrollbar, to absorb the shrinking instead.
+        """
+        # Horizontal only. Pinning the content height to the viewport is what
+        # keeps the pack ordering above governing vertically - a two-axis
+        # region would give the monitor its full requested height inside an
+        # unbounded frame, so it would stop growing with the window.
+        self._conn_scroll = ScrollableFrame(self.connection_frame,
+                                            vscroll=False, hscroll=True)
+        self._conn_scroll.pack(fill=tk.BOTH, expand=True)
+        self._conn_body = self._conn_scroll.inner
+
         self.create_connection_frame()
+        self.create_control_frame()   # reserved before the monitor expands
         self.create_data_frame()
-        self.create_control_frame()
 
     def create_notepad_content(self):
         """Create all content for the Notepad tab"""
@@ -752,8 +873,9 @@ class SerialGUI:
     
     def create_connection_frame(self):
         """Create connection settings frame"""
-        conn_frame = ttk.LabelFrame(self.connection_frame, text="Connection Settings", padding="10")
-        conn_frame.pack(fill=tk.X, padx=10, pady=5)
+        conn_frame = ttk.LabelFrame(self._conn_body, text="Connection Settings", padding="10")
+        conn_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        self.conn_frame = conn_frame
         
         # Port selection
         ttk.Label(conn_frame, text="Port:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
@@ -787,54 +909,43 @@ class SerialGUI:
         self.stopbits_var = tk.StringVar(value=str(self.settings.get('stop_bits', 1)))
     
     def create_data_frame(self):
-        """Create data display and input frame"""
-        data_frame = ttk.LabelFrame(self.connection_frame, text="Serial Monitor", padding="10")
-        data_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
-        # Received data display
-        ttk.Label(data_frame, text="Received Data:").pack(anchor=tk.W)
-        
-        # Create frame for received data and scrollbar
-        recv_frame = ttk.Frame(data_frame)
-        recv_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        # tk.Text + ttk.Scrollbar rather than scrolledtext.ScrolledText: the
-        # latter embeds a classic tk.Scrollbar, which renders badly on a dark
-        # background. The widget itself is still a tk.Text, so log_message(),
-        # clear_display() and save_log() are unaffected.
-        self.received_text = tk.Text(recv_frame, height=15, state=tk.DISABLED, wrap=tk.CHAR)
-        recv_scroll = ttk.Scrollbar(recv_frame, orient=tk.VERTICAL, command=self.received_text.yview)
-        self.received_text.configure(yscrollcommand=recv_scroll.set)
-        self.received_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        recv_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        """Create data display and input frame.
 
-        # Configure text tags for different message types
-        self._configure_text_tags(themes.CURRENT)
-        
-        # Send data section
+        The send row is built and packed before the receive pane, so it takes
+        its slice of the cavity first. It was previously packed last, which
+        meant the monitor's expand=True claimed everything and the whole Send
+        Data row - entry, Send button and the option checkboxes - was squeezed
+        out entirely once the window dropped below ~560px tall.
+        """
+        data_frame = ttk.LabelFrame(self._conn_body, text="Serial Monitor", padding="10")
+        data_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.data_frame = data_frame
+
+        # --- Send data: reserved first, rendered at the bottom -------------
         send_frame = ttk.Frame(data_frame)
-        send_frame.pack(fill=tk.X, pady=(5, 0))
-        
+        send_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
+        self.send_frame = send_frame
+
         ttk.Label(send_frame, text="Send Data:").pack(anchor=tk.W)
-        
+
         # Send input frame
         input_frame = ttk.Frame(send_frame)
         input_frame.pack(fill=tk.X, pady=(5, 0))
-        
+
         self.send_entry = ttk.Entry(input_frame)
         self.send_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         self.send_entry.bind('<Return>', lambda e: self.send_data())
-        
+
         self.send_btn = ttk.Button(input_frame, text="Send", command=self.send_data, state=tk.DISABLED)
         self.send_btn.pack(side=tk.RIGHT)
-        
+
         # Send options
         options_frame = ttk.Frame(send_frame)
         options_frame.pack(fill=tk.X, pady=(5, 0))
-        
+
         self.add_newline = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_frame, text="Add newline (\\n)", variable=self.add_newline).pack(side=tk.LEFT)
-        
+
         self.add_carriage_return = tk.BooleanVar(value=False)
         ttk.Checkbutton(options_frame, text="Add carriage return (\\r)", variable=self.add_carriage_return).pack(side=tk.LEFT, padx=(10, 0))
 
@@ -845,11 +956,39 @@ class SerialGUI:
 
         self.hex_display = tk.BooleanVar(value=False)
         ttk.Checkbutton(options_frame, text="Hex display", variable=self.hex_display).pack(side=tk.RIGHT)
-    
+
+        # --- Received data: packed last, so it is what absorbs the shrinking.
+        # It has its own scrollbar, so losing height costs nothing.
+        ttk.Label(data_frame, text="Received Data:").pack(side=tk.TOP, anchor=tk.W)
+
+        recv_frame = ttk.Frame(data_frame)
+        recv_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 10))
+        self.recv_frame = recv_frame
+
+        # tk.Text + ttk.Scrollbar rather than scrolledtext.ScrolledText: the
+        # latter embeds a classic tk.Scrollbar, which renders badly on a dark
+        # background. The widget itself is still a tk.Text, so log_message(),
+        # clear_display() and save_log() are unaffected.
+        # height is a *requested* size in lines. recv_frame has expand=True, so
+        # the monitor still fills whatever is left over and looks the same at
+        # the default window size; a smaller request simply lowers the height
+        # at which the packer runs out of cavity.
+        self.received_text = tk.Text(recv_frame, height=8, state=tk.DISABLED, wrap=tk.CHAR)
+        recv_scroll = ttk.Scrollbar(recv_frame, orient=tk.VERTICAL, command=self.received_text.yview)
+        self.received_text.configure(yscrollcommand=recv_scroll.set)
+        self.received_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        recv_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Configure text tags for different message types
+        self._configure_text_tags(themes.CURRENT)
+
     def create_control_frame(self):
         """Create control buttons frame"""
-        control_frame = ttk.LabelFrame(self.connection_frame, text="Serial Monitor Controls", padding="10")
-        control_frame.pack(fill=tk.X, padx=10, pady=5)
+        control_frame = ttk.LabelFrame(self._conn_body, text="Serial Monitor Controls", padding="10")
+        # side=BOTTOM, and packed before the serial monitor: this row must
+        # survive any window size.
+        control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+        self.control_frame = control_frame
         
         # Left side buttons
         left_frame = ttk.Frame(control_frame)
@@ -1272,7 +1411,6 @@ class SerialGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title(f"ZMODEM - {title}")
         dialog.transient(self.root)
-        dialog.resizable(False, False)
         dialog.geometry("+{}+{}".format(self.root.winfo_rootx() + 80,
                                         self.root.winfo_rooty() + 80))
         dialog.protocol("WM_DELETE_WINDOW", self.cancel_transfer)
@@ -1283,7 +1421,8 @@ class SerialGUI:
         self._transfer_name_var = tk.StringVar(value="Waiting for the other end...")
         ttk.Label(frame, textvariable=self._transfer_name_var).pack(anchor=tk.W)
 
-        self._transfer_bar = ttk.Progressbar(frame, mode="indeterminate", length=320)
+        self._transfer_bar = ttk.Progressbar(
+            frame, mode="indeterminate", length=scaling.px(self.ui_scale, 320))
         self._transfer_bar.pack(fill=tk.X, pady=(8, 4))
         self._transfer_bar.start(15)
 
@@ -1292,6 +1431,10 @@ class SerialGUI:
                   foreground=themes.CURRENT["fg_muted"]).pack(anchor=tk.W)
 
         ttk.Button(frame, text="Cancel", command=self.cancel_transfer).pack(pady=(10, 0))
+
+        self._prepare_dialog(dialog, on_close=self.cancel_transfer,
+
+                             resizable=(True, False))
 
         self._transfer_dialog = dialog
         self.themes.restyle(dialog)
@@ -1810,23 +1953,62 @@ class SerialGUI:
         # Tear the Qt side down before the Tk root. Leaving a live QMainWindow
         # referenced from self.plot_widget/plot_curves while the interpreter
         # shuts down is a known PyQt5 segfault-on-exit ordering hazard.
+        self._suspend_tab_events = True
         for plot in self.plots:
             plot.destroy()
 
         self.root.destroy()
 
     
+    def _prepare_dialog(self, dialog, on_close=None, resizable=(True, True)):
+        """Make a Toplevel dismissible and guaranteed to be on-screen.
+
+        These dialogs call grab_set(), so a Close button that lands off the
+        bottom of a scaled display used to be a hard lock: modal, not
+        resizable, not scrollable, with no Escape binding anywhere in the
+        package - the only way out was killing the process. Escape is the
+        escape hatch; clamping the size and position means it should not be
+        needed in the first place.
+        """
+        close = on_close or dialog.destroy
+        try:
+            dialog.protocol("WM_DELETE_WINDOW", close)
+            dialog.bind("<Escape>", lambda e: close())
+            dialog.resizable(*resizable)
+            dialog.update_idletasks()
+
+            area = scaling.work_area(self.root)
+            w, h = scaling.clamp_size(
+                (dialog.winfo_reqwidth(), dialog.winfo_reqheight()), area)
+            aw, ah = area
+            x, y = dialog.winfo_x(), dialog.winfo_y()
+            if aw and ah:
+                x = min(max(0, x), max(0, aw - w))
+                y = min(max(0, y), max(0, ah - h))
+            dialog.geometry(f"{w}x{h}+{x}+{y}")
+        except tk.TclError:
+            pass
+        return dialog
+
     def show_preferences(self):
         """Show the preferences dialog"""
         dialog = tk.Toplevel(self.root)
         dialog.title("Preferences")
-        dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("+{}+{}".format(self.root.winfo_rootx() + 60,
                                         self.root.winfo_rooty() + 60))
 
-        main_frame = ttk.Frame(dialog, padding="12")
+        # Close is packed first so it keeps its slice of the window, and the
+        # settings scroll instead. At 200%+ display scale this stack is taller
+        # than some laptop screens, and the dialog is modal.
+        btns = ttk.Frame(dialog, padding=(12, 0, 12, 12))
+        btns.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(btns, text="Close", command=dialog.destroy).pack()
+
+        body = ScrollableFrame(dialog, vscroll=True, hscroll=True)
+        body.pack(fill=tk.BOTH, expand=True)
+        main_frame = ttk.Frame(body.inner, padding="12")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         theme_frame = ttk.LabelFrame(main_frame, text="Appearance", padding="10")
@@ -1892,10 +2074,11 @@ class SerialGUI:
                   foreground=themes.CURRENT["fg_muted"]).grid(
                       row=1, column=0, sticky=tk.W, pady=(6, 0))
 
-        ttk.Button(main_frame, text="Close", command=dialog.destroy).grid(
-            row=4, column=0, pady=(12, 0))
 
         self.themes.restyle(dialog)
+
+
+        self._prepare_dialog(dialog)
 
     def reset_settings(self):
         """Reset all settings to defaults"""
@@ -2029,8 +2212,13 @@ For technical support, refer to the README.md file."""
         main_frame = ttk.Frame(dialog, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # Close reserved before the text pane expands, so shrinking the
+        # window cannot push the only way out below the bottom edge.
+        ttk.Button(main_frame, text="Close", command=dialog.destroy).pack(
+            side=tk.BOTTOM, pady=(10, 0))
+
         text_frame = ttk.Frame(main_frame)
-        text_frame.pack(fill=tk.BOTH, expand=True)
+        text_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         text = tk.Text(text_frame, width=width, height=height, wrap=tk.WORD)
         scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text.yview)
@@ -2041,17 +2229,16 @@ For technical support, refer to the README.md file."""
         text.insert(tk.END, body)
         text.config(state=tk.DISABLED)
 
-        ttk.Button(main_frame, text="Close", command=dialog.destroy).pack(pady=(10, 0))
-
         self.themes.restyle(dialog)
+        self._prepare_dialog(dialog)
         dialog.grab_set()
     
     def show_serial_config(self):
         """Show serial configuration dialog"""
         dialog = tk.Toplevel(self.root)
         dialog.title("Serial Configuration")
-        dialog.geometry(scaling.scale_geometry("220x150", self.ui_scale))
-        dialog.resizable(False, False)
+        # No fixed size: 220x150 was tight even at 100% scale, and the dialog
+        # was not resizable, so anything clipped stayed clipped.
         dialog.transient(self.root)
         dialog.grab_set()
         
@@ -2091,6 +2278,7 @@ For technical support, refer to the README.md file."""
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
 
         self.themes.restyle(dialog)
+        self._prepare_dialog(dialog)
     
 
 

@@ -33,7 +33,7 @@ from typing import Any, Dict
 from . import scaling, themes
 from .channels import Channel
 from .themes import contrast_fg_for
-from .widgets import ToolTip
+from .widgets import ScrollableFrame, ToolTip
 
 try:
     import pyqtgraph as pg
@@ -345,30 +345,16 @@ class PlotTab:
         ToolTip(self.remove_plot_btn,
                 "Close this plot and discard its data and settings")
 
-        # Outer scrollable area - covers all content panels
-        scroll_outer = ttk.Frame(self.frame)
-        scroll_outer.pack(fill=tk.BOTH, expand=True)
+        # Outer scrollable area - covers all content panels. Horizontal as well
+        # as vertical: a channel row is ~700px wide, so on a narrow window its
+        # rightmost controls ("Show Line", dot size) used to be clipped with no
+        # way at all to reach them.
+        self._scroll = ScrollableFrame(self.frame, vscroll=True, hscroll=True)
+        self._scroll.pack(fill=tk.BOTH, expand=True)
 
-        self.plot_scroll_canvas = tk.Canvas(scroll_outer, highlightthickness=0)
-        plot_scrollbar = ttk.Scrollbar(scroll_outer, orient=tk.VERTICAL,
-                                       command=self.plot_scroll_canvas.yview)
-        self.plot_scroll_canvas.configure(yscrollcommand=plot_scrollbar.set)
-
-        plot_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.plot_scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        content_frame = ttk.Frame(self.plot_scroll_canvas)
-        self._plot_canvas_window = self.plot_scroll_canvas.create_window(
-            (0, 0), window=content_frame, anchor="nw")
-
-        content_frame.bind("<Configure>", self._on_plot_content_configure)
-        self.plot_scroll_canvas.bind(
-            "<Configure>",
-            lambda e: self.plot_scroll_canvas.itemconfig(self._plot_canvas_window, width=e.width))
-
-        # Only claim the wheel while the pointer is over the tab
-        self.plot_scroll_canvas.bind("<Enter>", lambda e: self._bind_plot_scroll())
-        self.plot_scroll_canvas.bind("<Leave>", lambda e: self._unbind_plot_scroll())
+        # Kept under the old name: clear_plot_data and the scroll tests use it.
+        self.plot_scroll_canvas = self._scroll.canvas
+        content_frame = self._scroll.inner
 
         # --- All content panels go inside content_frame ---
 
@@ -484,19 +470,17 @@ class PlotTab:
 
     def _on_plot_content_configure(self, event=None):
         """Keep the outer scroll region in sync with the content frame."""
-        self.plot_scroll_canvas.configure(scrollregion=self.plot_scroll_canvas.bbox("all"))
-
-    def _bind_plot_scroll(self):
-        self.plot_scroll_canvas.bind_all("<MouseWheel>", self._on_plot_mousewheel)
-        self.plot_scroll_canvas.bind_all("<Button-4>", self._on_plot_mousewheel)
-        self.plot_scroll_canvas.bind_all("<Button-5>", self._on_plot_mousewheel)
-
-    def _unbind_plot_scroll(self):
-        self.plot_scroll_canvas.unbind_all("<MouseWheel>")
-        self.plot_scroll_canvas.unbind_all("<Button-4>")
-        self.plot_scroll_canvas.unbind_all("<Button-5>")
+        self._scroll._sync()
 
     def _on_plot_mousewheel(self, event):
+        """Scroll this tab by one notch.
+
+        Wheel *routing* - deciding which region an event belongs to, and
+        leaving events over a Text or Spinbox alone - lives in
+        widgets._WheelRouter. This stays a plain scroll so it keeps working
+        with a bare event carrying only num/delta, which is how the scroll
+        tests drive it.
+        """
         if event.num == 4:
             delta = -1
         elif event.num == 5:
@@ -862,6 +846,9 @@ class PlotTab:
         ch.dot_size_var = dot_size_var
         ch.line_var = line_var
         ch.color_btn = color_btn
+        # Rightmost control in the row - the first thing clipped on a
+        # narrow window, so the resize test needs a handle on it.
+        ch.line_checkbox = line_checkbox
 
         # Theme only the row just built. Restyling self.channel_frame here
         # walked every previously added row too, making the cost of adding N
@@ -1287,6 +1274,7 @@ class PlotTab:
         # Reset the scroll position now that the list is empty
         try:
             self.plot_scroll_canvas.yview_moveto(0)
+            self.plot_scroll_canvas.xview_moveto(0)
         except Exception:
             pass
 

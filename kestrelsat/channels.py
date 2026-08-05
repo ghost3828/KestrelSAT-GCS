@@ -52,6 +52,7 @@ class Channel:
     dot_size_var: Any = None
     line_var: Any = None
     color_btn: Any = None
+    line_checkbox: Any = None         # rightmost control, first to clip when narrow
 
     @property
     def label(self) -> str:

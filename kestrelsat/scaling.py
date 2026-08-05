@@ -39,6 +39,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+import re
 import sys
 import tkinter as tk
 from tkinter import font as tkfont
@@ -198,3 +199,68 @@ def scale_geometry(geometry, factor):
         return scaled + ("+" + rest if rest else "")
     except (ValueError, AttributeError):
         return geometry
+
+
+def parse_geometry(geometry):
+    """'WxH+x+y' -> (w, h, x, y). Any part that will not parse comes back None.
+
+    Handles the negative-offset form ('800x780-10-10') too, which Tk uses to
+    mean "measured from the right/bottom edge" - scale_geometry's simpler
+    partition('+') cannot see those.
+    """
+    m = re.match(r"^\s*(\d+)x(\d+)([+-]\d+)?([+-]\d+)?\s*$", geometry or "")
+    if not m:
+        return (None, None, None, None)
+    w, h = int(m.group(1)), int(m.group(2))
+    x = int(m.group(3)) if m.group(3) else None
+    y = int(m.group(4)) if m.group(4) else None
+    return (w, h, x, y)
+
+
+def screen_size(root):
+    """Raw display size in pixels, or (0, 0) if Tk cannot answer."""
+    try:
+        return (int(root.winfo_screenwidth()), int(root.winfo_screenheight()))
+    except Exception:
+        return (0, 0)
+
+
+def work_area(root):
+    """Usable desktop area, with the taskbar excluded where we can tell.
+
+    On Windows SPI_GETWORKAREA reports the real figure, in physical pixels once
+    enable_dpi_awareness() has run - which main() does before the root exists.
+    Anywhere else, and on any failure at all, fall back to the screen size less
+    a nominal taskbar strip. This must never raise: it is called during startup
+    and from the tests, which run headless.
+    """
+    sw, sh = screen_size(root)
+    if not sw or not sh:
+        return (0, 0)
+    try:
+        import ctypes
+        from ctypes import wintypes
+        rect = wintypes.RECT()
+        # SPI_GETWORKAREA = 0x0030
+        if ctypes.windll.user32.SystemParametersInfoW(
+                0x0030, 0, ctypes.byref(rect), 0):
+            w = int(rect.right - rect.left)
+            h = int(rect.bottom - rect.top)
+            if w > 0 and h > 0:
+                return (min(w, sw), min(h, sh))
+    except Exception:
+        pass
+    # No reliable answer: assume a taskbar-sized strip is unavailable.
+    return (sw, max(1, sh - 70))
+
+
+def clamp_size(size, area, margin=(0, 0)):
+    """Shrink (w, h) to fit inside area. Pure, so it unit-tests with no display."""
+    w, h = size
+    aw, ah = area
+    mw, mh = margin
+    if aw and aw > 0:
+        w = min(w, max(1, aw - mw))
+    if ah and ah > 0:
+        h = min(h, max(1, ah - mh))
+    return (int(w), int(h))

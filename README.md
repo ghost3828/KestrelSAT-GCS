@@ -26,6 +26,8 @@ interactive rendering of live data.
 - **ZMODEM File Transfer**: Send and receive files over the same serial link, compatible with
   `sz`/`rz`, TeraTerm, minicom and other standard ZMODEM tools
 - **Status Bar**: Connection status and samples-per-second
+- **Resize-safe**: a minimum window size plus scrollable panels, so no control
+  can be pushed out of reach; Send Data and the monitor controls always stay visible
 
 ## Requirements
 
@@ -238,7 +240,7 @@ kestrelsat/
     channels.py                # Channel record
     scaling.py                 # High-DPI display scaling
     zmodem.py                  # ZMODEM file transfer protocol
-    widgets.py                 # ToolTip
+    widgets.py                 # ToolTip, ScrollableFrame
 tests/                         # See tests/README.md
 check_ports.py                 # Standalone serial port lister
 requirements.txt               # Python dependencies
