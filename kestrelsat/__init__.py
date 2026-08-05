@@ -20,4 +20,4 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Single source of truth for the version. The window title, the About dialog
 # and the release tag all read from here, so a bump is one edit.
-__version__ = "3.1.0"
+__version__ = "3.2.0"

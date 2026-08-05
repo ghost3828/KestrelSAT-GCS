@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v3.2.0
 
 ### New
 
