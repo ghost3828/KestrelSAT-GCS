@@ -16,6 +16,10 @@ by default they show the same data - what differs is how each is set up to displ
 "Remove This Plot" closes one and renumbers the rest; the last plot cannot be removed.
 Up to 12 plots. With four plots open the receive path still sustains ~80,000 lines/s.
 
+**Ctrl+T inserts a Notepad timestamp**, from any tab - it switches to the Notepad so the
+stamp is never added somewhere you cannot see. The button now reads
+"Insert Timestamp (Ctrl+T)".
+
 ### Under the hood
 
 The ~1,400 lines of per-plot logic moved out of `SerialGUI` into a `PlotTab` class in

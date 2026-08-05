@@ -104,6 +104,12 @@ remaining plot cannot be removed.
    drops the channels and their settings; **Clear Buffer** keeps the channels and discards
    all but the most recent sample of each.
 
+### Notepad
+
+A scratch pad for notes taken alongside a session. **Insert Timestamp (Ctrl+T)** stamps the
+current date and time at the cursor. The shortcut works from any tab and switches to the
+Notepad so you can see the stamp land.
+
 ### Logging
 
 - "Start Logging" writes everything received to a file continuously, and the header shows

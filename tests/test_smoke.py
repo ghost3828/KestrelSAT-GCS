@@ -99,5 +99,37 @@ for sub in menubar.winfo_children():
     assert str(sub.cget("bg")) == sg.themes.CURRENT["surface"], (sub, sub.cget("bg"))
 print("menu ok (%d cascades)" % len(menubar.winfo_children()))
 
+# notepad timestamp hotkey
+import re as _re
+_TS = _re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+
+assert app.insert_timestamp_btn.cget("text") == "Insert Timestamp (Ctrl+T)", \
+    app.insert_timestamp_btn.cget("text")
+
+# Inside the notepad: exactly one timestamp, and Tk's default Control-t
+# transpose must not also fire (it would reorder the surrounding characters).
+app.notebook.select(app.notepad_frame)
+app.notepad_text.delete("1.0", "end")
+app.notepad_text.insert("1.0", "abcd")
+app.notepad_text.mark_set("insert", "1.2")
+app.notepad_text.focus_force()
+root.update()
+app.notepad_text.event_generate("<Control-t>")
+root.update()
+_got = app.notepad_text.get("1.0", "end-1c")
+assert len(_TS.findall(_got)) == 1, _got
+assert "".join(c for c in _got if c.isalpha()) == "abcd", "Ctrl+T transposed characters"
+
+# From another tab it switches to the Notepad, so the insert is never invisible.
+app.notebook.select(app.plots[0].frame)
+app.notepad_text.delete("1.0", "end")
+root.update()
+root.event_generate("<Control-t>")
+root.update()
+assert app.notebook.tab(app.notebook.select(), "text") == "Notepad"
+assert len(_TS.findall(app.notepad_text.get("1.0", "end-1c"))) == 1
+print("notepad Ctrl+T hotkey ok")
+
+app.notes_dirty = False
 app.on_closing()
 print("\nSMOKE OK")

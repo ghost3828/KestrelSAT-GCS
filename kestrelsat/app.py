@@ -314,6 +314,30 @@ class SerialGUI:
         
         # Bind keyboard shortcut for quit
         self.root.bind_all("<Control-q>", lambda e: self.on_closing())
+
+        # Ctrl+T stamps a note from anywhere. Two bindings are needed because
+        # Tk's Text class already binds Control-t to tk::TextTranspose, and
+        # bind_all runs *after* the class binding - so inside any Text widget
+        # the global binding alone would transpose two characters as well as
+        # insert the timestamp. Overriding the class binding and returning
+        # "break" replaces the transpose and stops the chain before bind_all.
+        self.root.bind_class("Text", "<Control-t>", self._on_timestamp_hotkey)
+        self.root.bind_all("<Control-t>", self._on_timestamp_hotkey)
+
+    def _on_timestamp_hotkey(self, event=None):
+        """Insert a notepad timestamp, showing the Notepad tab if hidden.
+
+        Without the tab switch the keystroke would silently append to notes the
+        user cannot see whenever it is pressed from another tab.
+        """
+        try:
+            if self.notebook.select() != str(self.notepad_frame):
+                self.notebook.select(self.notepad_frame)
+            self.notepad_text.focus_set()
+        except Exception:
+            pass
+        self.insert_notepad_timestamp()
+        return "break"
     
     def create_status_bar(self):
         """Create status bar at the bottom of the window"""
@@ -620,7 +644,7 @@ class SerialGUI:
 
         self.insert_timestamp_btn = ttk.Button(
             toolbar,
-            text="Insert Timestamp",
+            text="Insert Timestamp (Ctrl+T)",
             command=self.insert_notepad_timestamp
         )
         self.insert_timestamp_btn.pack(side=tk.LEFT, padx=(0, 8))
@@ -1973,7 +1997,12 @@ This program links PyQt5, which is itself distributed under the GPL v3."""
    • Automatic first-line filtering ensures clean plot data
    • Buffer management prevents memory overflow
    • Plot legend updates with custom channel names
-   
+
+7. KEYBOARD SHORTCUTS
+   • Ctrl+T  Insert a timestamp into the Notepad. Works from any tab;
+             switches to the Notepad so you can see it land.
+   • Ctrl+Q  Quit
+
 For technical support, refer to the README.md file."""
 
         self._show_text_dialog("User Guide", guide_text, width=72, height=30)
