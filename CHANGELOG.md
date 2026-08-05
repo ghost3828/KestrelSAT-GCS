@@ -20,6 +20,9 @@ Up to 12 plots. With four plots open the receive path still sustains ~80,000 lin
 stamp is never added somewhere you cannot see. The button now reads
 "Insert Timestamp (Ctrl+T)".
 
+**"Show echo"** next to Add carriage return, on by default: turn it off to stop sent data
+from being echoed into the Serial Monitor display (and log file, if logging).
+
 ### Under the hood
 
 The ~1,400 lines of per-plot logic moved out of `SerialGUI` into a `PlotTab` class in

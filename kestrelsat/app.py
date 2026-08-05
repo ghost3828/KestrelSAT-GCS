@@ -837,7 +837,12 @@ class SerialGUI:
         
         self.add_carriage_return = tk.BooleanVar(value=False)
         ttk.Checkbutton(options_frame, text="Add carriage return (\\r)", variable=self.add_carriage_return).pack(side=tk.LEFT, padx=(10, 0))
-        
+
+        self.show_echo = tk.BooleanVar(value=True)
+        show_echo_check = ttk.Checkbutton(options_frame, text="Show echo", variable=self.show_echo)
+        show_echo_check.pack(side=tk.LEFT, padx=(10, 0))
+        ToolTip(show_echo_check, "Show data you send in the Serial Monitor display")
+
         self.hex_display = tk.BooleanVar(value=False)
         ttk.Checkbutton(options_frame, text="Hex display", variable=self.hex_display).pack(side=tk.RIGHT)
     
@@ -1443,19 +1448,21 @@ class SerialGUI:
             
             if self.test_mode:
                 # Simulate sending in test mode
-                self.log_message(data.rstrip('\r\n'), "SENT")
-                
+                if self.show_echo.get():
+                    self.log_message(data.rstrip('\r\n'), "SENT")
+
                 # Simulate echo response after a short delay
                 def simulate_echo():
                     time.sleep(0.1)
                     self._post_rx(('log', (f"Echo: {data.rstrip()}", "RECEIVED")))
-                
+
                 threading.Thread(target=simulate_echo, daemon=True).start()
             else:
                 # Real serial communication
                 if self.serial_connection is not None:
                     self.serial_connection.write(data.encode('utf-8'))
-                    self.log_message(data.rstrip('\r\n'), "SENT")
+                    if self.show_echo.get():
+                        self.log_message(data.rstrip('\r\n'), "SENT")
                 else:
                     messagebox.showerror("Error", "Serial connection is not available")
             

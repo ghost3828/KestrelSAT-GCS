@@ -187,6 +187,7 @@ one is running and resumes afterwards.
 ### Send Options
 - **Add newline (\\n)**: Append newline character to sent data
 - **Add carriage return (\\r)**: Append carriage return character to sent data
+- **Show echo**: Show data you send in the Serial Monitor display (on by default)
 
 ## Building a Windows executable
 

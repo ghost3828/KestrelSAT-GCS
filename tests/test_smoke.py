@@ -130,6 +130,38 @@ assert app.notebook.tab(app.notebook.select(), "text") == "Notepad"
 assert len(_TS.findall(app.notepad_text.get("1.0", "end-1c"))) == 1
 print("notepad Ctrl+T hotkey ok")
 
+# "Show echo" toggle for sent data
+assert app.show_echo.get() is True, "Show echo should default to on"
+
+app.notebook.select(app.connection_frame)
+app.port_var.set("TEST MODE")
+app.connect()
+root.update()
+
+def _sent_lines():
+    return [l for l in app.received_text.get("1.0", "end-1c").splitlines()
+            if l.strip() == "echo probe"]
+
+app.send_entry.delete(0, tk.END)
+app.send_entry.insert(0, "echo probe")
+app.send_data()
+root.update()
+assert _sent_lines(), "echo of sent data should appear when Show echo is on"
+
+app.show_echo.set(False)
+app.received_text.config(state=tk.NORMAL)
+app.received_text.delete("1.0", "end")
+app.received_text.config(state=tk.DISABLED)
+app.send_entry.delete(0, tk.END)
+app.send_entry.insert(0, "echo probe")
+app.send_data()
+root.update()
+assert not _sent_lines(), "sent data should not be echoed when Show echo is off"
+
+app.disconnect()
+root.update()
+print("show echo toggle ok")
+
 app.notes_dirty = False
 app.on_closing()
 print("\nSMOKE OK")
