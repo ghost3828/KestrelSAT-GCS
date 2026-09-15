@@ -17,6 +17,8 @@ SUITES = [
     "test_multiplot.py",
     "test_resize.py",
     "test_zmodem.py",
+    "test_arducam.py",
+    "test_camera.py",
     "test_smoke.py",
     "test_plot.py",
     "test_channel_scroll.py",

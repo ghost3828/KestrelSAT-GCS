@@ -61,6 +61,7 @@ from .themes import (
     SETTINGS_FILE, DEFAULT_THEME, THEME_ORDER, THEMES,
 )
 from .plotting import PlotTab
+from .camera import CameraTab
 from . import scaling
 from . import __version__
 from . import zmodem
@@ -150,6 +151,12 @@ class SerialGUI:
         # ZMODEM file transfer
         self.zmodem_enabled = bool(self.settings.get('zmodem_enabled', True))
         self._transfer_active = threading.Event()
+        # Serialises port writes. Camera commands are queued from Tk timers
+        # while ZMODEM writes from its own thread, and although the two are
+        # mutually excluded by _transfer_active, the lock makes that cheap to
+        # reason about rather than something to re-derive at every call site.
+        self._write_lock = threading.Lock()
+        self.camera = None
         self._transfer_cancel = None
         self._transfer_thread = None
         self._transfer_dialog = None
@@ -212,6 +219,8 @@ class SerialGUI:
         os.makedirs(self.logs_dir, exist_ok=True)
         self.notes_dir = os.path.join(os.getcwd(), "notes")
         os.makedirs(self.notes_dir, exist_ok=True)
+        self.captures_dir = os.path.join(os.getcwd(), "captures")
+        os.makedirs(self.captures_dir, exist_ok=True)
         self.downloads_dir = os.path.join(os.getcwd(), "downloads")
         os.makedirs(self.downloads_dir, exist_ok=True)
         
@@ -278,6 +287,12 @@ class SerialGUI:
 
         # Setup Notepad tab content
         self.create_notepad_content()
+
+        # Camera tab. Added before the plot tabs so that it lands to the left
+        # of '+', which must stay rightmost to keep working as an add button.
+        self.camera = CameraTab(self, self.notebook)
+        self.notebook.add(self.camera.frame, text="Camera")
+        self.themes.restyle(self.camera.frame)
 
         # Plot tabs, plus the '+' that adds another one. Built last so the
         # plot tabs and '+' sit to the right of the fixed tabs.
@@ -708,6 +723,10 @@ class SerialGUI:
         self.plot_colors = list(c["plot_palette"])
         self._configure_text_tags(c)
         self._style_notepad_widget(c)
+        # After the tree walk, which paints every Canvas with the generic
+        # surface colour - the viewer wants its own backdrop.
+        if getattr(self, "camera", None) is not None:
+            self.camera.on_theme(c)
         for plot in self.plots:
             plot.plot_colors = list(c["plot_palette"])
             plot._remap_auto_channel_colors(c)
@@ -1098,6 +1117,8 @@ class SerialGUI:
                 self.read_thread.start()
                 
                 self.log_message("Connected to TEST MODE - Simulated Device", "SYSTEM")
+                if self.camera is not None:
+                    self.camera.on_connect()
                 return
             
             # Regular serial connection
@@ -1145,6 +1166,8 @@ class SerialGUI:
             self.save_current_settings()
             
             self.log_message(f"Connected to {port}", "SYSTEM")
+            if self.camera is not None:
+                self.camera.on_connect()
             
         except serial.SerialException as e:
             messagebox.showerror("Connection Error", f"Failed to connect to {self.port_var.get()}: {str(e)}")
@@ -1160,6 +1183,11 @@ class SerialGUI:
             self._transfer_cancel.set()
         self.serial_buffer = ""  # Clear buffer on disconnect
         self.first_line_received = False  # Reset first line flag
+        # Before the reader is joined: stops the camera's timers and clears a
+        # half-read packet, which would otherwise corrupt the next session's
+        # first capture.
+        if self.camera is not None:
+            self.camera.on_disconnect()
 
         # Stop the worker before closing the port, not after: closing a port
         # the reader is still blocked inside is undefined behaviour.
@@ -1260,7 +1288,16 @@ class SerialGUI:
                 break
 
             if kind == 'data':
-                self.display_received_data(payload)
+                # Camera packets come off first. display_received_data()
+                # decodes as UTF-8 with errors='replace', which would destroy
+                # image bytes beyond recovery, and hex mode would swallow them
+                # into the log instead - both branches are lossy. Worse, a
+                # JPEG can contain ZMODEM's receive offer, so letting image
+                # bytes reach the monitor risks seizing the port mid-capture.
+                if self.camera is not None:
+                    payload = self.camera.consume(payload)
+                if payload:
+                    self.display_received_data(payload)
             elif kind == 'log':
                 self.log_message(payload[0], payload[1])
             elif kind == 'zmodem':
@@ -1324,6 +1361,12 @@ class SerialGUI:
                 "TEST MODE",
                 "TEST MODE simulates telemetry and has no real serial port, "
                 "so files cannot be transferred.")
+            return False
+        if self.camera is not None and self.camera.busy:
+            messagebox.showinfo(
+                "Camera busy",
+                "A camera capture is in progress. Wait for it to finish, or "
+                "cancel it on the Camera tab.")
             return False
         if self._transfer_active.is_set():
             messagebox.showinfo("Transfer in progress",
@@ -1575,6 +1618,30 @@ class SerialGUI:
         except Exception as e:
             self.log_message(f"Error displaying data: {str(e)}", "ERROR")
     
+    def write_bytes(self, data: bytes) -> bool:
+        """Write raw bytes to the port.
+
+        send_data() is the text path: it encodes as UTF-8 and appends line
+        endings, neither of which a binary command frame survives. Callers get
+        True only if the bytes actually went out.
+        """
+        if not self.is_connected or self.test_mode or self.serial_connection is None:
+            return False
+        if self._transfer_active.is_set():
+            # A ZMODEM transfer owns the port; interleaving would corrupt both.
+            return False
+        try:
+            with self._write_lock:
+                self.serial_connection.write(data)
+            return True
+        except serial.SerialException as e:
+            self.log_message(f"Error writing to port: {str(e)}", "ERROR")
+            self.handle_connection_error()
+            return False
+        except Exception as e:
+            self.log_message(f"Error writing to port: {str(e)}", "ERROR")
+            return False
+
     def send_data(self):
         """Send data through serial port or test mode"""
         if not self.is_connected:
@@ -1862,7 +1929,13 @@ class SerialGUI:
             'stop_bits': 1,
             'theme': DEFAULT_THEME,
             'ui_scale': 'auto',
-            'zmodem_enabled': True
+            'zmodem_enabled': True,
+            'camera_pix_fmt': 1,        # JPEG
+            'camera_mode': 12,          # 2048x1536, what Astro 331 Lab 5 uses
+            'camera_quality': 1,        # default
+            'camera_autosave': False,
+            'camera_trace': False,
+            'camera_distance': ''
         }
 
         try:
@@ -1954,6 +2027,8 @@ class SerialGUI:
         # referenced from self.plot_widget/plot_curves while the interpreter
         # shuts down is a known PyQt5 segfault-on-exit ordering hazard.
         self._suspend_tab_events = True
+        if self.camera is not None:
+            self.camera.destroy()
         for plot in self.plots:
             plot.destroy()
 

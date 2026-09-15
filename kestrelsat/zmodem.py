@@ -724,6 +724,12 @@ def _unique_path(path):
     return f"{stem} ({index}){ext}"
 
 
+# Public alias: the Camera tab needs the same collision-safe naming when it
+# auto-saves a capture, and reaching into a private name across modules would
+# be worse than exporting it.
+unique_path = _unique_path
+
+
 def find_offer(buffer):
     """Index of a receive offer in *buffer*, or -1.
 

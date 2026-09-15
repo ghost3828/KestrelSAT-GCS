@@ -34,7 +34,7 @@ root.update()
 
 # --- defaults ---------------------------------------------------------------
 print("default layout")
-check(tabs(app) == ["Connection", "Notepad", "Plot 1", "  +  "],
+check(tabs(app) == ["Connection", "Notepad", "Camera", "Plot 1", "  +  "],
       "one plot tab plus '+': %s" % tabs(app))
 check(len(app.plots) == 1, "exactly one plot to start")
 check(app.plots[0].window_title == "Serial Plot 1",
@@ -44,7 +44,7 @@ check(app.plots[0].window_title == "Serial Plot 1",
 print("adding plots")
 app.add_plot_tab()
 root.update()
-check(tabs(app) == ["Connection", "Notepad", "Plot 1", "Plot 2", "  +  "],
+check(tabs(app) == ["Connection", "Notepad", "Camera", "Plot 1", "Plot 2", "  +  "],
       "'+' stays rightmost after adding: %s" % tabs(app))
 check(app.plots[1].window_title == "Serial Plot 2",
       "second window is 'Serial Plot 2'")
@@ -101,7 +101,7 @@ messagebox.showinfo = lambda t, m, *a, **k: notices.append(m)
 
 app.remove_plot_tab(app.plots[1])
 root.update()
-check(tabs(app) == ["Connection", "Notepad", "Plot 1", "Plot 2", "  +  "],
+check(tabs(app) == ["Connection", "Notepad", "Camera", "Plot 1", "Plot 2", "  +  "],
       "tab removed: %s" % tabs(app))
 check([p.window_title for p in app.plots] == ["Serial Plot 1", "Serial Plot 2"],
       "remaining plots renumbered, windows included")
