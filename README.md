@@ -25,6 +25,9 @@ interactive rendering of live data.
 - **High-DPI Aware**: Scales itself to stay readable on 4K and other high-resolution displays
 - **ZMODEM File Transfer**: Send and receive files over the same serial link, compatible with
   `sz`/`rz`, TeraTerm, minicom and other standard ZMODEM tools
+- **Camera (ArduCAM Mega)**: Take pictures and preview over the same link, with a viewer that
+  zooms to 1:1 and measures in image pixels, a per-capture sharpness score for focusing, and
+  saving that records the distance in the filename
 - **Status Bar**: Connection status and samples-per-second
 - **Resize-safe**: a minimum window size plus scrollable panels, so no control
   can be pushed out of reach; Send Data and the monitor controls always stay visible
@@ -111,6 +114,67 @@ remaining plot cannot be removed.
 A scratch pad for notes taken alongside a session. **Insert Timestamp (Ctrl+T)** stamps the
 current date and time at the cursor. The shortcut works from any tab and switches to the
 Notepad so you can see the stamp land.
+
+### Camera (ArduCAM Mega)
+
+Drives an ArduCAM Mega SPI camera attached to the MCU, over the same serial link as
+everything else. It speaks the stock Arducam protocol, so **no change to the MCU firmware
+is needed** and the same board still works with Arducam's own GUI tool.
+
+The firmware runs the link at **115200 baud** - connect at that rate on the Connection tab
+or the camera will not answer. The tab says so in a banner if the port is closed or the
+baud looks wrong.
+
+**Taking a picture.** Pick the format (JPEG unless you have a reason), the size and the
+quality, then "Take Picture". The progress bar shows bytes received, rate and an estimate
+of the time left; "Cancel" abandons the image. A full-resolution 2048x1536 JPEG takes
+**30-50 seconds** - see [Why captures are slow](#why-captures-are-slow) below.
+
+The size list is built from the module's own reported capabilities, so a 3MP camera is
+never offered a resolution it cannot produce. "Camera Info" shows the module, its exposure
+and gain limits, and the firmware and SDK versions.
+
+**Preview** streams frames continuously for framing and coarse focus. At 115200 that is
+roughly one frame a second, so it is not smooth video; keep it at 320x240 or 640x480.
+
+**Looking at the image.** "Fit" shows the whole frame; "1:1" shows one image pixel per
+screen pixel, and `-`/`+` or the mouse wheel step the zoom. Drag to pan. Click two points
+to measure the distance between them **in image pixels**, which is how you read off the
+finest line pair the camera still resolves; right-click or "Clear ruler" resets it.
+
+**Focus assist** scores each capture by Laplacian variance over a fixed 512x512 block of
+native pixels and shows the session's readings as bars, with the best highlighted. Rotate
+the lens, retake, and watch the number: higher is sharper. Because the block is a fixed
+size in native pixels, successive shots are comparable - but only at the same distance,
+resolution and lighting.
+
+**Saving.** "Save Image..." defaults to the `captures/` folder and builds a filename from
+the timestamp, the resolution and the **Distance** field, e.g.
+`2026-09-15_143022_cam_2048x1536_1.0m.jpg`. A JPEG is written byte for byte as it came off
+the camera, so nothing is re-encoded. "Auto-save every capture" writes every shot without
+asking.
+
+**Without hardware**, connect to `TEST MODE`: the tab synthesises a resolution-chart frame
+and feeds it through the real protocol parser, so the whole workflow can be rehearsed.
+
+#### Why captures are slow
+
+The Arducam library's UART write adds a 12 microsecond delay to every byte on top of the
+115200 bit time, which works out at about 10 kB/s. That is what makes a full-resolution
+JPEG take 30-50 seconds and holds preview near one frame a second.
+
+If you are willing to modify the MCU sketch, two changes together give roughly a **nine
+times** speedup. Both are optional and neither is applied here, because the stock firmware
+is what the lab handout describes and what Arducam's GUI tool expects:
+
+1. In `ArducamLink.cpp`, drop the `delayUs(12)` from `arducamUartWrite`, and use the block
+   write already sitting commented out in `arducamUartWriteBuff`.
+2. In `main.cpp`, call `myUart.arducamUartBegin(921600)` instead of `115200`.
+
+Raising the baud rate is the part that matters - removing the delay on its own is worth
+only about 14%, because the bit time dominates until the link gets faster. Afterwards,
+connect this app at 921600 to match. Check that your USB-serial bridge handles 921600
+before handing this to a class.
 
 ### Logging
 
@@ -221,6 +285,17 @@ not match `kestrelsat.__version__`.
    partial fragment left in the device's buffer.
 6. **"PyQtGraph not available"**: Install the plotting dependencies with
    `pip install pyqtgraph PyQt5`
+7. **Camera does not answer**: The ArduCAM firmware is fixed at 115200 baud, so connect at
+   that rate. Check that the blue STAT LED near the centre of the MCU board is lit, which
+   means the camera initialised over SPI, and that the camera has power - it draws more
+   than some USB ports will supply, which is why the lab powers the 5V rail from the
+   battery.
+8. **A capture takes half a minute**: That is expected at full resolution. See
+   [Why captures are slow](#why-captures-are-slow).
+9. **Preview is not smooth**: Also expected - roughly one frame a second at 115200. Use it
+   for framing and coarse focus, not as video.
+10. **"image arrived without its end marker"**: The image is shown anyway but may be
+    truncated. Usually a baud-rate or cabling problem; retake it.
 
 ### Error Messages
 
@@ -240,6 +315,8 @@ kestrelsat/
     channels.py                # Channel record
     scaling.py                 # High-DPI display scaling
     zmodem.py                  # ZMODEM file transfer protocol
+    arducam.py                 # ArduCAM Mega protocol: commands and packet parsing
+    camera.py                  # CameraTab: camera control, viewer and captures
     widgets.py                 # ToolTip, ScrollableFrame
 tests/                         # See tests/README.md
 check_ports.py                 # Standalone serial port lister
@@ -251,6 +328,7 @@ README.md                      # This file
 serial_gui_settings.json       # Auto-generated settings (created after first use)
 logs/                          # Auto-generated default folder for log files
 downloads/                     # Auto-generated default folder for received files
+captures/                      # Auto-generated default folder for camera images
 ```
 
 `serial_gui.py` stays the entry point, so the PyInstaller spec needs no changes

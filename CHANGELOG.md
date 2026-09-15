@@ -1,5 +1,55 @@
 # Changelog
 
+## v3.3.0
+
+### New
+
+**Camera tab for the ArduCAM Mega.** Astro 331 Lab 5 previously sent students to Arducam's
+own GUI tool for the imaging payload; the whole lab now runs inside the GCS. Take a
+picture, pick the format, resolution and quality, watch the transfer with a progress bar
+and ETA, and save. Preview mode streams frames for framing and coarse focus.
+
+The viewer is built for what the lab actually measures. Fit, 1:1 and stepped zoom with
+drag-to-pan, because a 2048x1536 resolution chart fitted to an 800px window has thrown
+away most of the pixels being measured, and a two-click ruler that reports the distance
+between points in image pixels - which is how you read off the finest line pair the
+camera still resolves.
+
+**Focus assist.** Every capture is scored by Laplacian variance over a fixed 512x512
+block of native pixels, shown with a session history bar that highlights the best. Task 5
+asks students to rotate the lens and retake until focus stops improving; this turns that
+into a number going up. Readings are only comparable at the same distance, resolution and
+lighting, and the tab says so.
+
+**Capture bookkeeping.** A thumbnail strip of the session's images, a distance field that
+feeds the default filename as the lab requires, and optional auto-save of every capture
+into `captures/`. A saved JPEG is written byte for byte as it arrived from the camera, so
+nothing is re-encoded.
+
+The resolution list comes from the module's own `supportResolution` bitmask, so a 3MP
+camera is never offered a resolution it cannot produce. Camera Info reports the module,
+its limits and the firmware and SDK versions.
+
+TEST MODE synthesises a resolution-chart frame and feeds it through the real codec and
+parser, so the tab - and the whole lab workflow - can be rehearsed without hardware.
+
+### Notes
+
+No change to the MCU. The same PlatformIO sketch still works with Arducam's GUI tool, so
+Task 2 of the lab handout stands as written. At 115200 the firmware's UART write adds
+12 us per byte, giving about 10 kB/s, so a full-resolution JPEG takes 30-50 seconds and
+preview runs near one frame a second. The README documents an optional firmware patch for
+instructors who want that faster.
+
+The camera parser runs inside the existing receive pump and hands back whatever was not
+camera traffic, so the monitor and the plots keep working during a capture rather than
+being locked out the way a ZMODEM transfer locks them out. This is also a correctness
+matter: a JPEG can contain ZMODEM's receive offer, and image bytes reaching the monitor
+could otherwise start a file transfer in the middle of a capture.
+
+No new dependencies. `numpy` is now listed explicitly in `requirements.txt`, but it was
+already installed as a pyqtgraph dependency.
+
 ## v3.2.0
 
 ### New

@@ -225,21 +225,28 @@ class CameraTab:
 
         cap = ttk.LabelFrame(box, text="Capture", padding=px(6))
         cap.pack(fill=tk.X, **pad)
-        ttk.Label(cap, text="Format").pack(anchor=tk.W)
+        # Labels beside the fields rather than above them: three stacked
+        # label-over-combo pairs pushed Save off the bottom of the panel at an
+        # ordinary window size, and saving is half of what this tab is for.
+        grid = ttk.Frame(cap)
+        grid.pack(fill=tk.X)
+        grid.columnconfigure(1, weight=1)
         self.fmt_combo = ttk.Combobox(
-            cap, textvariable=self.pix_fmt_var, state="readonly",
+            grid, textvariable=self.pix_fmt_var, state="readonly", width=10,
             values=[arducam.PIX_FMT_NAMES[f] for f in sorted(arducam.PIX_FMT_NAMES)])
-        self.fmt_combo.pack(fill=tk.X)
-        self.fmt_combo.bind("<<ComboboxSelected>>", lambda e: self._on_capture_setting())
-        ttk.Label(cap, text="Resolution").pack(anchor=tk.W, pady=(px(4), 0))
-        self.mode_combo = ttk.Combobox(cap, textvariable=self.mode_var, state="readonly")
-        self.mode_combo.pack(fill=tk.X)
-        self.mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_capture_setting())
-        ttk.Label(cap, text="Quality").pack(anchor=tk.W, pady=(px(4), 0))
+        self.mode_combo = ttk.Combobox(grid, textvariable=self.mode_var,
+                                       state="readonly", width=10)
         self.quality_combo = ttk.Combobox(
-            cap, textvariable=self.quality_var, state="readonly",
+            grid, textvariable=self.quality_var, state="readonly", width=10,
             values=[arducam.QUALITY_NAMES[q] for q in sorted(arducam.QUALITY_NAMES)])
-        self.quality_combo.pack(fill=tk.X)
+        for row, (text, combo) in enumerate((("Format", self.fmt_combo),
+                                             ("Size", self.mode_combo),
+                                             ("Quality", self.quality_combo))):
+            ttk.Label(grid, text=text).grid(row=row, column=0, sticky=tk.W,
+                                            pady=px(1), padx=(0, px(4)))
+            combo.grid(row=row, column=1, sticky=tk.EW, pady=px(1))
+        self.fmt_combo.bind("<<ComboboxSelected>>", lambda e: self._on_capture_setting())
+        self.mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_capture_setting())
         self.quality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_quality())
         self.estimate_label = ttk.Label(cap, text="", wraplength=px(200),
                                         foreground=themes.CURRENT["fg_muted"])
@@ -276,6 +283,19 @@ class CameraTab:
                 "distance between them in image pixels - that is how you read "
                 "off the finest line pair the camera still resolves.")
 
+        save = ttk.LabelFrame(box, text="Save", padding=px(6))
+        save.pack(fill=tk.X, **pad)
+        ttk.Label(save, text="Distance (in filename)").pack(anchor=tk.W)
+        ttk.Entry(save, textvariable=self.distance_var).pack(fill=tk.X)
+        self.save_btn = ttk.Button(save, text="Save Image...", command=self.save_image)
+        self.save_btn.pack(fill=tk.X, pady=(px(4), 0))
+        ttk.Checkbutton(save, text="Auto-save every capture",
+                        variable=self.autosave_var,
+                        command=self._persist).pack(anchor=tk.W, pady=(px(2), 0))
+        ttk.Checkbutton(save, text="Log raw packets",
+                        variable=self.trace_var,
+                        command=self._persist).pack(anchor=tk.W)
+
         focus = ttk.LabelFrame(box, text="Focus assist", padding=px(6))
         focus.pack(fill=tk.X, **pad)
         ttk.Label(focus, textvariable=self.sharp_var).pack(anchor=tk.W)
@@ -292,19 +312,6 @@ class CameraTab:
                 "of native pixels, so successive shots are comparable. Higher "
                 "is sharper. Only compare readings taken at the same distance, "
                 "resolution and lighting.")
-
-        save = ttk.LabelFrame(box, text="Save", padding=px(6))
-        save.pack(fill=tk.X, **pad)
-        ttk.Label(save, text="Distance (goes in the filename)").pack(anchor=tk.W)
-        ttk.Entry(save, textvariable=self.distance_var).pack(fill=tk.X)
-        self.save_btn = ttk.Button(save, text="Save Image...", command=self.save_image)
-        self.save_btn.pack(fill=tk.X, pady=(px(4), 0))
-        ttk.Checkbutton(save, text="Auto-save every capture",
-                        variable=self.autosave_var,
-                        command=self._persist).pack(anchor=tk.W, pady=(px(2), 0))
-        ttk.Checkbutton(save, text="Log raw packets",
-                        variable=self.trace_var,
-                        command=self._persist).pack(anchor=tk.W)
 
         self._refresh_modes()
         self._update_estimate()
@@ -1072,32 +1079,68 @@ class CameraTab:
             self.app.root.after(30, self._demo_feed, stream, offset + step)
 
     def make_test_pattern(self, mode: int, pix_fmt: int) -> Optional[bytes]:
-        """A resolution-chart-flavoured frame: converging line wedges."""
+        """A resolution-chart-flavoured frame for TEST MODE.
+
+        Converging line wedges in both orientations, plus a slanted edge, so
+        that zooming in and running the ruler over it behaves the way the real
+        chart does - which is the point of being able to rehearse the lab
+        without hardware.
+        """
         if not self._ensure_decoder():
             return None
         try:
-            from PyQt5.QtGui import QColor, QPainter
+            from PyQt5.QtGui import QColor, QFont, QPainter
+
             width, height = arducam.size_for_mode(mode)
             image = QImage(width, height, QImage.Format_RGB888)
-            image.fill(QColor(235, 235, 235))
+            image.fill(QColor(242, 242, 242))
             painter = QPainter(image)
-            painter.fillRect(0, 0, width, height, QColor(240, 240, 240))
-            # Converging vertical bars: the gap halves across the frame, which
-            # is what makes a resolution limit visible.
-            x = 4.0
-            pitch = max(width / 80.0, 2.0)
-            while x < width - 4 and pitch >= 1.0:
-                painter.fillRect(int(x), int(height * 0.1),
-                                 max(1, int(pitch / 2)), int(height * 0.35),
-                                 QColor(20, 20, 20))
-                x += pitch
-                pitch *= 0.97
-            # A slanted edge for good measure.
-            for row in range(int(height * 0.55), int(height * 0.9)):
-                offset = int((row - height * 0.55) * 0.3)
-                painter.fillRect(int(width * 0.3) + offset, row,
-                                 int(width * 0.35), 1, QColor(30, 30, 30))
+            ink = QColor(24, 24, 24)
+
+            def wedge(x0, y0, w, h, vertical, start_pitch):
+                """Bars whose pitch shrinks across the block."""
+                pos, pitch = 0.0, float(start_pitch)
+                span = w if vertical else h
+                while pos < span and pitch >= 1.0:
+                    bar = max(1, int(pitch / 2))
+                    if vertical:
+                        painter.fillRect(x0 + int(pos), y0, bar, h, ink)
+                    else:
+                        painter.fillRect(x0, y0 + int(pos), w, bar, ink)
+                    pos += pitch
+                    pitch *= 0.965
+
+            margin = max(int(min(width, height) * 0.05), 4)
+            block_w = int(width * 0.4)
+            block_h = int(height * 0.32)
+            wedge(margin, margin, block_w, block_h, True, max(width / 42.0, 3.0))
+            wedge(width - margin - block_w, margin, block_w, block_h, False,
+                  max(height / 30.0, 3.0))
+            wedge(margin, height - margin - block_h, block_w, block_h, False,
+                  max(height / 30.0, 3.0))
+
+            # A slanted edge, the other half of an ISO 12233 target.
+            edge_x = width - margin - block_w
+            edge_y = height - margin - block_h
+            for row in range(block_h):
+                painter.fillRect(edge_x + int(row * 0.18), edge_y + row,
+                                 block_w - int(block_h * 0.18), 1, ink)
+
+            # Corner markers, so panning at 1:1 has something to orient by.
+            tick = max(int(min(width, height) * 0.04), 4)
+            for cx, cy in ((0, 0), (width - tick, 0), (0, height - tick),
+                           (width - tick, height - tick)):
+                painter.fillRect(cx, cy, tick, tick, ink)
+
+            if min(width, height) >= 240:
+                painter.setPen(ink)
+                font = QFont()
+                font.setPixelSize(max(int(height * 0.05), 8))
+                painter.setFont(font)
+                painter.drawText(int(width * 0.42), int(height * 0.54),
+                                 "TEST MODE %dx%d" % (width, height))
             painter.end()
+
             if pix_fmt == arducam.PIX_FMT_JPEG:
                 blob = QByteArray()
                 buffer = QBuffer(blob)
@@ -1105,7 +1148,8 @@ class CameraTab:
                 ok = image.save(buffer, "JPG", 88)
                 buffer.close()
                 return bytes(blob) if ok else None
-            # Uncompressed formats: hand back something the decoder accepts.
+
+            # Uncompressed formats: a frame of the right size for the decoder.
             return bytes(width * height * 2)
         except Exception:
             return None

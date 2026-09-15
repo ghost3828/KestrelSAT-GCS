@@ -52,7 +52,9 @@ jobs:
           }
 
       - name: Run the tests that do not need a display
-        run: python tests/test_themes.py
+        run: |
+          python tests/test_themes.py
+          python tests/test_arducam.py
 
       - name: Build
         run: python -m PyInstaller KestrelSAT_GCS_v1.spec

@@ -38,3 +38,7 @@ notes/
 
 # ZMODEM downloads
 downloads/
+
+# Camera captures
+captures/
+tests/captures/

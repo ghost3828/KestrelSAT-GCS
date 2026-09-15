@@ -4,5 +4,11 @@
   "data_bits": 8,
   "parity": "None",
   "stop_bits": 1.0,
-  "theme": "dark"
+  "theme": "dark",
+  "camera_pix_fmt": 1,
+  "camera_mode": 12,
+  "camera_quality": 1,
+  "camera_autosave": false,
+  "camera_trace": false,
+  "camera_distance": ""
 }
